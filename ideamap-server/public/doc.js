@@ -16,7 +16,7 @@
   const MAX_TEXT = 500;
   const MAX_COORD = 100000;
   const MAX_DEPTH = 60;
-  const MAX_BATCH = 50;
+  const MAX_BATCH = 250;
   const COLORS = ['default', 'blue', 'green', 'amber', 'red', 'purple', 'teal', 'grey'];
   const ID_RE = /^[A-Za-z0-9_-]{4,24}$/;
   const CLIENT_OPS = ['add', 'text', 'move', 'reparent', 'delete', 'color', 'layout', 'batch'];

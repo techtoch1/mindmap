@@ -21,6 +21,12 @@ A multi-user, real-time mind-mapping app for marketing ideas, by Aligned.
 - Live cursors, live selections and avatars for everyone in the map. View-only people can watch and follow along.
 - Keyboard: `Tab` add idea, `Enter` add sibling, `F2` edit, `Del` delete, arrows to move around, `+`/`-`/`0` zoom and fit. Pinch-zoom on touch screens.
 
+**Claude assistant (optional)**
+- **Ask Claude** opens a side panel in the editor. Ask it to add ideas, rename, recolour, move, delete or tidy, or just ask for advice.
+- Claude only **proposes**. You see a list of changes and click **Apply**. The whole proposal is one undo step (Ctrl+Z) and goes live for everyone in the map. **Dismiss** throws it away.
+- Editors and admins only. Viewers do not see it.
+- Off until `ANTHROPIC_API_KEY` is set. See [Claude assistant setup](#claude-assistant-setup).
+
 **Brand**
 - IBM Plex Sans (self-hosted, SIL OFL), Poseidon blue `#187bcd`, charcoal `#333334`, light and dark themes (follows the system, switchable from the account menu).
 
@@ -48,6 +54,31 @@ All settings are environment variables. See `.env.example`.
 | `COOKIE_SECURE` | off | Set `1` on HTTPS: `__Host-` Secure session cookie and HSTS |
 | `PUBLIC_URL` | none | Optional extra allowed origin, e.g. `https://ideamap.aligned-tech.com` |
 | `SETUP_TOKEN` | none | Optional. If set, creating the first admin requires this secret |
+| `ANTHROPIC_API_KEY` | none | Switches the Claude assistant on. Server-side only, never sent to browsers |
+| `CLAUDE_MODEL` | `claude-opus-5-5` | Model used for the assistant |
+| `CLAUDE_EFFORT` | `medium` | `low`, `medium`, `high`, `xhigh` or `max`. Higher thinks longer and costs more |
+| `AI_REQUESTS_PER_HOUR` | `60` | Per person, to cap spend |
+| `CLAUDE_FALLBACK` | on | Retry on a fallback model if Claude declines. `0` turns it off |
+
+## Claude assistant setup
+
+1. Create an API key at https://console.anthropic.com (Settings, API keys). Set a monthly spend limit there too.
+2. Add it to the server's settings file **without** echoing it on screen or into shell history:
+
+   ```bash
+   read -s -p "Paste your Anthropic API key: " KEY; echo
+   printf 'ANTHROPIC_API_KEY=%s\n' "$KEY" >> ~/ideamap.env; unset KEY
+   sudo systemctl restart ideamap
+   ```
+3. Sign in as admin, open **People**, and press **Test connection** under *Claude assistant*. It runs the exact request a real question uses and shows any error in plain words.
+
+How it stays safe:
+- The key lives only in the server's environment. Browsers never receive it.
+- Claude cannot change a map. It returns a proposal in a fixed format. The server turns it into the same operations the editor uses, dry-runs them on a copy of the map, drops anything invalid (unknown ideas, deleting the central idea, duplicates), and the browser applies the result only when a person clicks **Apply**.
+- Idea text and the map title are given to Claude as data, with instructions to ignore any commands found in them. A teammate typing "ignore your rules" into an idea cannot make changes happen, because nothing is applied without a click.
+- Limits: 60 requests per person per hour, one at a time per person, 2,000 characters per request, at most 100 changes per proposal.
+- Privacy: the map's title and idea text are sent to Anthropic whenever someone asks Claude. Nothing is sent otherwise. Do not enable this if maps may hold information that must not leave your servers.
+- Cost: you pay Anthropic per request. A typical request on the default model is a few cents. `CLAUDE_MODEL=claude-sonnet-5-5` is roughly half the price.
 
 ## Security notes
 
@@ -87,9 +118,11 @@ src/app.js           HTTP routes, auth, invites, roles, security headers
 src/realtime.js      WebSocket hub: rooms, ops, undo/redo, presence
 src/db.js            SQLite schema
 src/security.js      scrypt, tokens, login throttle
+src/ai.js            Claude assistant: prompt, proposal checking, limits
 src/templates.js     starter maps
 public/doc.js        document engine shared by server and browser
 public/editor.js     canvas editor     public/app.js  screens and routing
+public/ai-panel.js   Ask Claude panel
 test/                node:test suites (npm test)
 ```
 
@@ -98,6 +131,7 @@ test/                node:test suites (npm test)
 - No password reset yet. An admin can remove the account and send a new invite.
 - Email is not sent by the app. Invite links are copied and shared by the admin.
 - Fonts are Latin only.
+- Claude answers appear all at once after a few seconds (no word-by-word streaming yet).
 
 ## Fonts
 

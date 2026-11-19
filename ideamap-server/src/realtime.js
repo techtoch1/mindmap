@@ -20,7 +20,7 @@ class Hub {
     this.auth = auth; // { sessionFromCookie(header), checkOrigin(req) }
     this.rooms = new Map();
     this.nextConn = 1;
-    this.wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
     this.q = {
       map: db.prepare('SELECT id, title, data, version FROM maps WHERE id = ?'),
       save: db.prepare('UPDATE maps SET data = ?, search_text = ?, node_count = ?, version = ?, updated_at = ? WHERE id = ?'),

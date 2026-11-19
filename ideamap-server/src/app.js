@@ -6,6 +6,7 @@ const dbmod = require('./db');
 const sec = require('./security');
 const { Hub } = require('./realtime');
 const { TEMPLATES } = require('./templates');
+const aiMod = require('./ai');
 const Doc = require('../public/doc.js');
 
 const ROLES = ['admin', 'editor', 'viewer'];
@@ -37,8 +38,14 @@ class HttpError extends Error {
 
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
 
-function createApp(config) {
+function createApp(config, deps = {}) {
   const db = dbmod.open(config.dataDir);
+  let anthropic = deps.anthropic || null;
+  if (!anthropic && config.anthropicApiKey) {
+    const Anthropic = require('@anthropic-ai/sdk');
+    anthropic = new Anthropic({ apiKey: config.anthropicApiKey, maxRetries: 2, timeout: 180000 });
+  }
+  const ai = aiMod.create({ client: anthropic, config });
   const COOKIE = config.cookieSecure ? '__Host-idm' : 'idm';
 
   const q = {
@@ -234,6 +241,7 @@ function createApp(config) {
   route('GET', '/api/session', null, ({ sess }) => ({
     needsSetup: q.userCount.get().n === 0,
     setupTokenRequired: !!config.setupToken,
+    ai: { enabled: ai.enabled },
     user: sess ? sess.user : null,
     csrf: sess ? sess.csrf : null,
   }));
@@ -458,6 +466,27 @@ function createApp(config) {
     return { map: mapSummary(saveNewMap(JSON.parse(m.data), title, sess.user.id)) };
   });
 
+  const aiError = (e) => (e instanceof aiMod.AiError ? new HttpError(e.status, e.message) : e);
+
+  route('POST', '/api/maps/:id/ai', 'editor', async ({ params, body, sess }) => {
+    const m = loadMap(params.id);
+    try {
+      return await ai.ask({ userId: sess.user.id, doc: JSON.parse(m.data), title: m.title, selected: body.selected, message: body.message, history: body.history });
+    } catch (e) {
+      throw aiError(e);
+    }
+  });
+
+  route('GET', '/api/admin/ai', 'admin', () => ({ enabled: ai.enabled, model: config.aiModel, effort: config.aiEffort, perHour: config.aiPerHour, fallback: config.aiFallback }));
+
+  route('POST', '/api/admin/ai/test', 'admin', async () => {
+    try {
+      return await ai.test();
+    } catch (e) {
+      throw aiError(e);
+    }
+  });
+
   route('DELETE', '/api/maps/:id', 'editor', ({ params, sess }) => {
     const m = loadMap(params.id);
     if (sess.user.role !== 'admin' && m.owner_id !== sess.user.id) throw new HttpError(403, 'Only the map owner or an admin can delete this map');
@@ -540,7 +569,7 @@ function createApp(config) {
       }
       let body = {};
       if (mutating && req.method !== 'DELETE') body = await readBody(req, url.pathname === '/api/maps/import' ? 3 * 1024 * 1024 : 64 * 1024);
-      const out = r.handler({ req, res, params, query: url.searchParams, body, sess, ip: clientIp(req) });
+      const out = await r.handler({ req, res, params, query: url.searchParams, body, sess, ip: clientIp(req) });
       send(res, 200, out);
     } catch (e) {
       if (e instanceof HttpError) {

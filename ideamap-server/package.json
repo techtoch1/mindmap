@@ -4,12 +4,15 @@
   "description": "Idea Map by Aligned: multi-user, real-time mind mapping for marketing ideas",
   "private": true,
   "main": "server.js",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "test": "node --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.11.0",
     "better-sqlite3": "^11.10.0",
     "ws": "^8.18.0"
   }

@@ -75,13 +75,24 @@
     const bJson = btn('JSON', 'download', () => download(`/api/maps/${encodeURIComponent(mapId)}/export`, ''), { title: 'Download the map as a JSON file' });
     const swatches = h('div', { class: 'swatches', role: 'group', 'aria-label': 'Colour of selected idea' },
       D.COLORS.map((c) => h('button', { class: 'sw c-' + c, type: 'button', title: COLOR_NAMES[c], 'aria-label': COLOR_NAMES[c], 'aria-pressed': 'false', dataset: { color: c }, onclick: () => selected && setColor(selected, c) })));
-    const editTools = [bAddChild, bAddSib, bDelete, h('span', { class: 'sep' }), swatches, h('span', { class: 'sep' }), bUndo, bRedo, bTidy, h('span', { class: 'sep' })];
+    const bAsk = btn('Ask Claude', 'tidy', () => ai.toggle(), { title: 'Brainstorm and customise this map with Claude' });
+    const editTools = [bAsk, h('span', { class: 'sep' }), bAddChild, bAddSib, bDelete, h('span', { class: 'sep' }), swatches, h('span', { class: 'sep' }), bUndo, bRedo, bTidy, h('span', { class: 'sep' })];
     const toolbar = h('div', { class: 'ed-tools', role: 'toolbar', 'aria-label': 'Map tools' }, editTools, bFold, h('span', { class: 'sep' }), bPng, bJson);
 
     const bar = h('div', { class: 'ed-bar' },
       h('a', { class: 'btn ghost sm', href: '#/', title: 'Back to all maps' }, icon('back'), 'Maps'),
       titleHolder, h('span', { class: 'grow' }), peersBox, status);
-    const root = h('div', { class: 'ed', id: 'main' }, bar, toolbar, canvas);
+    const ai = window.IdeaAiPanel.create({
+      mapId, api: ctx.api, enabled: !!(ctx.ai && ctx.ai.enabled), isAdmin: !!ctx.isAdmin,
+      getSelected: () => selected,
+      apply: (op) => {
+        if (!commit(op)) return false;
+        fit(); // new branches can land off-screen
+        if (window.matchMedia && window.matchMedia('(max-width: 760px)').matches) ai.close(); // the panel covers the map on phones
+        return true;
+      },
+    });
+    const root = h('div', { class: 'ed', id: 'main' }, bar, toolbar, h('div', { class: 'ed-body' }, canvas, ai.el));
     container.replaceChildren(root);
 
     /* ---------- networking ---------- */

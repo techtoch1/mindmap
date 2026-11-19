@@ -2,7 +2,7 @@
   'use strict';
   const { h, icon, logo, avatar, toast, modal, relTime, download } = window.IdeaUI;
   const root = document.getElementById('app');
-  const state = { user: null, csrf: null, needsSetup: false, setupTokenRequired: false };
+  const state = { user: null, csrf: null, needsSetup: false, setupTokenRequired: false, ai: { enabled: false } };
   let editor = null;
 
   /* ---------- API ---------- */
@@ -67,6 +67,7 @@
       state.csrf = s.csrf;
       state.needsSetup = s.needsSetup;
       state.setupTokenRequired = s.setupTokenRequired;
+      state.ai = s.ai || { enabled: false };
     } catch (e) {
       root.replaceChildren(h('div', { class: 'center-wrap' }, h('div', { class: 'card auth-card' }, h('h1', {}, 'Idea Map'), h('p', { class: 'error', role: 'alert' }, e.message))));
       return;
@@ -382,17 +383,48 @@
   /* ---------- editor ---------- */
   function viewMap(id) {
     root.replaceChildren();
-    editor = window.IdeaEditor.open(root, id, { api, navigate, onSignedOut: signedOut });
+    editor = window.IdeaEditor.open(root, id, { api, navigate, onSignedOut: signedOut, ai: state.ai, isAdmin: state.user.role === 'admin' });
   }
 
   /* ---------- admin ---------- */
   async function viewAdmin() {
     const usersBox = h('div', { class: 'card table-wrap' });
+    const claudeBox = h('div', { class: 'card', style: { padding: '16px' } });
     const invitesBox = h('div', { class: 'card table-wrap' });
     const role = h('select', { 'aria-label': 'Role for the new invite' }, ['editor', 'viewer', 'admin'].map((r) => h('option', { value: r }, ROLE_HELP[r])));
     const note = h('input', { type: 'text', maxlength: '80', placeholder: 'Who is this for? (optional, only you see it)', 'aria-label': 'Note' });
 
+    async function drawClaude() {
+      try {
+        const c = await api('GET', '/api/admin/ai');
+        const result = h('p', { class: 'small', role: 'status' });
+        const test = h('button', { class: 'btn', type: 'button', disabled: !c.enabled || undefined }, 'Test connection');
+        test.addEventListener('click', async () => {
+          test.disabled = true;
+          result.className = 'small muted';
+          result.textContent = 'Asking Claude…';
+          try {
+            const r = await api('POST', '/api/admin/ai/test');
+            result.className = 'small';
+            result.textContent = 'Working. Claude (' + r.model + ') answered and proposed ' + r.proposed + ' change.';
+          } catch (e) {
+            result.className = 'small error';
+            result.textContent = e.message;
+          } finally { test.disabled = false; }
+        });
+        claudeBox.replaceChildren(
+          h('div', { class: 'row', style: { flexWrap: 'wrap' } },
+            h('span', { class: 'badge ' + (c.enabled ? 'admin' : 'off') }, c.enabled ? 'On' : 'Off'),
+            h('span', {}, c.enabled
+              ? 'Model ' + c.model + ' · effort ' + c.effort + ' · ' + c.perHour + ' requests per person per hour'
+              : 'Not switched on. Add ANTHROPIC_API_KEY to the server settings and restart (see the README).'),
+            h('span', { class: 'grow' }), test),
+          result);
+      } catch (e) { claudeBox.replaceChildren(h('p', { class: 'error' }, e.message)); }
+    }
+
     async function load() {
+      drawClaude();
       try {
         const [u, i] = await Promise.all([api('GET', '/api/admin/users'), api('GET', '/api/admin/invites')]);
         drawUsers(u.users);
@@ -480,6 +512,7 @@
         h('div', { class: 'card', style: { padding: '16px' } }, h('div', { class: 'row', style: { flexWrap: 'wrap' } },
           h('div', { style: { flex: '1 1 260px' } }, role), h('div', { style: { flex: '2 1 260px' } }, note),
           h('button', { class: 'btn primary', type: 'button', onclick: createInvite }, icon('plus'), 'Create invite link')))),
+      h('section', { class: 'section' }, h('h2', {}, 'Claude assistant'), claudeBox),
       h('section', { class: 'section' }, h('h2', {}, 'Team'), usersBox),
       h('section', { class: 'section' }, h('h2', {}, 'Invites'), invitesBox)));
     load();

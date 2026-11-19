@@ -7,10 +7,10 @@ const WebSocket = require('ws');
 const { load } = require('../src/config');
 const { createApp } = require('../src/app');
 
-async function start(env = {}) {
+async function start(env = {}, deps = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ideamap-test-'));
   const config = load({ DATA_DIR: dataDir, ...env });
-  const app = createApp(config);
+  const app = createApp(config, deps);
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const port = app.server.address().port;
   const host = `127.0.0.1:${port}`;

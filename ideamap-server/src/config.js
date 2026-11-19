@@ -20,6 +20,12 @@ function load(env = process.env) {
     cookieSecure: truthy(env.COOKIE_SECURE),
     publicUrl,
     setupToken: env.SETUP_TOKEN || '',
+    // Claude assistant (off unless ANTHROPIC_API_KEY is set)
+    anthropicApiKey: (env.ANTHROPIC_API_KEY || '').trim(),
+    aiModel: (env.CLAUDE_MODEL || 'claude-opus-5-5').trim(),
+    aiEffort: ['low', 'medium', 'high', 'xhigh', 'max'].includes(env.CLAUDE_EFFORT) ? env.CLAUDE_EFFORT : 'medium',
+    aiPerHour: Math.max(1, Number(env.AI_REQUESTS_PER_HOUR) || 60),
+    aiFallback: env.CLAUDE_FALLBACK === undefined ? true : truthy(env.CLAUDE_FALLBACK),
     allowedOrigins: allowed,
     inviteTtlMs: 7 * 24 * 3600 * 1000,
     sessionTtlMs: 14 * 24 * 3600 * 1000,
