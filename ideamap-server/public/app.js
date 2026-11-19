@@ -523,7 +523,10 @@
 
     async function load() {
       try {
-        draw(await api('GET', '/api/admin/ai'));
+        const st = await api('GET', '/api/admin/ai');
+        // An older server answers with fewer fields. That means the app was updated but not restarted yet.
+        if (!Array.isArray(st.models)) throw new Error('The server is still running an older version of Idea Map. Restart it to finish the update: sudo systemctl restart ideamap');
+        draw(st);
       } catch (e) {
         card.replaceChildren(h('p', { class: 'error', role: 'alert' }, e.message));
       }
