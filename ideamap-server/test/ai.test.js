@@ -23,7 +23,7 @@ function fakeClaude(answer, extra = {}) {
     },
   };
 }
-const change = (o) => ({ action: 'add', ref: null, parent: null, text: null, color: null, ...o });
+const change = (o) => ({ action: 'add', ref: '', parent: '', text: '', color: '', ...o });
 const answer = (reply, changes = [], tidy = false) => ({ reply, changes, tidy });
 
 async function world(claude, env = {}) {
@@ -363,4 +363,45 @@ test('large maps are sent with a truncation note, and big proposals still fit th
   assert.ok(D.applyOp(D.clone(big), out.ops).ok);
   const tooMany = ai.translate(big, answer('lots', [...many, ...many]), ctx.refs);
   assert.equal(tooMany.changes.length, 100);
+});
+
+// Claude's structured-output API validates the schema strictly. A schema it rejects makes every request
+// fail with a 400, and a fake client cannot notice. This lint enforces the rules offline.
+test('the output schema only uses features the structured-output API accepts', () => {
+  const matches = (type, v) => (type === 'string' ? typeof v === 'string' : type === 'boolean' ? typeof v === 'boolean' : type === 'number' ? typeof v === 'number' : true);
+  const walk = (node, path) => {
+    assert.ok(node && typeof node === 'object', path + ' is a schema object');
+    assert.equal(Array.isArray(node.type), false, path + ': type must be a single value, not a union list');
+    assert.equal(node.anyOf, undefined, path + ': no unions (keeps the schema simple)');
+    for (const banned of ['minLength', 'maxLength', 'minimum', 'maximum', 'minItems', 'maxItems', 'pattern', 'format', 'oneOf', 'allOf', 'not', '$ref', 'default']) {
+      assert.equal(node[banned], undefined, `${path}: ${banned} is not supported`);
+    }
+    if (node.enum) for (const v of node.enum) assert.ok(matches(node.type, v), `${path}: enum value ${JSON.stringify(v)} must match type ${node.type}`);
+    if (node.type === 'object') {
+      assert.equal(node.additionalProperties, false, path + ': additionalProperties must be false');
+      assert.deepEqual([...node.required].sort(), Object.keys(node.properties).sort(), path + ': every property must be required');
+      for (const [k, v] of Object.entries(node.properties)) walk(v, `${path}.${k}`);
+    }
+    if (node.type === 'array') walk(node.items, path + '[]');
+  };
+  walk(ai.SCHEMA, 'schema');
+  assert.equal(ai.SCHEMA.properties.changes.items.properties.color.enum[0], '');
+});
+
+test('Test connection shows admins the API reason, while normal users never see it', async (t) => {
+  const bad = Anthropic.APIError.generate(400, { type: 'error', error: { type: 'invalid_request_error', message: 'output_config.format.schema: example reason' } }, 'output_config.format.schema: example reason', new Headers());
+  const w = await world(fakeClaude(() => bad));
+  t.after(() => w.s.close());
+  const adminSees = await w.admin.api('POST', '/api/admin/ai/test');
+  assert.equal(adminSees.status, 502);
+  assert.match(adminSees.json.error, /Details: .*example reason/);
+  const userSees = await ask(w.editor, w.map, { message: 'hi' });
+  assert.equal(userSees.status, 502);
+  assert.doesNotMatch(userSees.text, /example reason/);
+  // key problems never include details, even for admins
+  const auth = Anthropic.APIError.generate(401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key sk-ant-SECRET' } }, 'invalid x-api-key sk-ant-SECRET', new Headers());
+  const w2 = await world(fakeClaude(() => auth));
+  t.after(() => w2.s.close());
+  const r = await w2.admin.api('POST', '/api/admin/ai/test');
+  assert.doesNotMatch(r.text, /SECRET|sk-ant/);
 });

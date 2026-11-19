@@ -18,9 +18,10 @@ const MAX_OUTLINE_NODES = 800;
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 class AiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, detail) {
     super(message);
     this.status = status;
+    this.detail = detail; // technical reason, only shown to admins (never for key problems)
   }
 }
 
@@ -44,7 +45,7 @@ Style:
 - Propose at most ${MAX_CHANGES} changes. When you add or reorganise many ideas, set "tidy" to true so the layout is rearranged neatly. Otherwise set it to false.
 - If the request needs no change to the map (a question, advice, feedback), leave "changes" empty and answer in "reply".
 
-How the "changes" fields work. Always include all four fields and use null for the ones that do not apply:
+How the "changes" fields work. Always include all four fields and use an empty string "" for the ones that do not apply:
 - action "add": "ref" is your new temporary reference, "parent" is the reference of the idea to add it under, "text" is the idea.
 - action "rename": "ref" is the idea to rename, "text" is the new wording.
 - action "color": "ref" is the idea to colour, "color" is one of the allowed colours.
@@ -66,10 +67,10 @@ const SCHEMA = {
         required: ['action', 'ref', 'parent', 'text', 'color'],
         properties: {
           action: { type: 'string', enum: ['add', 'rename', 'color', 'move', 'delete'] },
-          ref: { type: ['string', 'null'] },
-          parent: { type: ['string', 'null'] },
-          text: { type: ['string', 'null'] },
-          color: { type: ['string', 'null'], enum: [...Doc.COLORS, null] },
+          ref: { type: 'string' },
+          parent: { type: 'string' },
+          text: { type: 'string' },
+          color: { type: 'string', enum: ['', ...Doc.COLORS] },
         },
       },
     },
@@ -269,11 +270,11 @@ function create({ client, config }) {
       if (e instanceof Anthropic.APIConnectionError) throw new AiError(502, 'The server could not reach Claude. Try again shortly.');
       if (e instanceof Anthropic.BadRequestError) {
         console.error('Claude rejected the request:', e.message);
-        throw new AiError(502, 'Claude could not process that request. An admin can check the server log.');
+        throw new AiError(502, 'Claude could not process that request. An admin can check the server log.', String(e.message).slice(0, 500));
       }
       if (e instanceof Anthropic.APIError) {
         console.error('Claude API error:', e.status, e.message);
-        throw new AiError(502, 'Claude had a problem answering. Try again shortly.');
+        throw new AiError(502, 'Claude had a problem answering. Try again shortly.', `HTTP ${e.status}: ${String(e.message).slice(0, 500)}`);
       }
       throw e;
     }
@@ -318,12 +319,17 @@ function create({ client, config }) {
   // Admin check that exercises exactly the same request path as a real question.
   async function test() {
     if (!client) throw new AiError(503, 'ANTHROPIC_API_KEY is not set on the server.');
-    const doc = Doc.newDoc('Test idea');
-    const ctx = buildContext(doc, 'Connection test', null);
-    const res = await call(SYSTEM_PROMPT, [{ role: 'user', content: `${ctx.text}\nRequest: Add one idea called "It works" under the central idea.` }]);
-    const parsed = parseAnswer(res);
-    const out = translate(doc, parsed, ctx.refs);
-    return { ok: true, model: res.model || config.aiModel, proposed: out.changes.length };
+    try {
+      const doc = Doc.newDoc('Test idea');
+      const ctx = buildContext(doc, 'Connection test', null);
+      const res = await call(SYSTEM_PROMPT, [{ role: 'user', content: `${ctx.text}\nRequest: Add one idea called "It works" under the central idea.` }]);
+      const parsed = parseAnswer(res);
+      const out = translate(doc, parsed, ctx.refs);
+      return { ok: true, model: res.model || config.aiModel, proposed: out.changes.length };
+    } catch (e) {
+      if (e instanceof AiError && e.detail) e.message += ' Details: ' + e.detail; // admins only: this route needs the admin role
+      throw e;
+    }
   }
 
   return { enabled: !!client, ask, test };
