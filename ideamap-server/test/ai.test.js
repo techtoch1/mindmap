@@ -49,6 +49,7 @@ test('without an API key the assistant is off and says so', async (t) => {
   assert.match(r.json.error, /not switched on/);
   assert.equal((await admin.api('GET', '/api/admin/ai')).json.enabled, false);
   assert.equal((await admin.api('POST', '/api/admin/ai/test')).status, 503);
+  assert.equal((await admin.api('GET', '/api/admin/ai')).json.source, 'none');
 });
 
 test('only editors and admins can ask Claude, and it needs a session and CSRF token', async (t) => {
@@ -340,7 +341,13 @@ test('admin connection test uses the same request path', async (t) => {
   });
   const w = await world(claude);
   t.after(() => w.s.close());
-  assert.deepEqual((await w.admin.api('GET', '/api/admin/ai')).json, { enabled: true, model: 'claude-opus-5-5', effort: 'medium', perHour: 60, fallback: true });
+  const st = (await w.admin.api('GET', '/api/admin/ai')).json;
+  assert.equal(st.enabled, true);
+  assert.equal(st.model, 'claude-opus-5-5');
+  assert.equal(st.effort, 'medium');
+  assert.equal(st.perHour, 60);
+  assert.equal(st.fallback, true);
+  assert.equal(st.autoApply, true);
   const r = await w.admin.api('POST', '/api/admin/ai/test');
   assert.equal(r.status, 200);
   assert.deepEqual(r.json, { ok: true, model: 'claude-opus-5-5', proposed: 1 });
@@ -404,4 +411,136 @@ test('Test connection shows admins the API reason, while normal users never see 
   t.after(() => w2.s.close());
   const r = await w2.admin.api('POST', '/api/admin/ai/test');
   assert.doesNotMatch(r.text, /SECRET|sk-ant/);
+});
+
+const FAKE_KEY = 'sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd';
+
+test('settings: the API key is saved encrypted, never sent back, and switches Claude on', async (t) => {
+  const s = await start();
+  t.after(() => s.close());
+  const admin = await s.setupAdmin();
+  const editor = await s.invite(admin, 'editor', 'ed@example.com', 'Ed');
+  assert.equal((await s.req('GET', '/api/session', { cookie: admin.cookie })).json.ai.enabled, false);
+
+  assert.equal((await admin.api('PUT', '/api/admin/ai', { apiKey: 'not a key' })).status, 400);
+  assert.equal((await admin.api('PUT', '/api/admin/ai', { apiKey: 'sk-ant-short' })).status, 400);
+  assert.equal((await editor.api('PUT', '/api/admin/ai', { apiKey: FAKE_KEY })).status, 403, 'only admins');
+  assert.equal((await s.req('PUT', '/api/admin/ai', { body: { apiKey: FAKE_KEY } })).status, 401);
+  assert.equal((await s.req('PUT', '/api/admin/ai', { body: { apiKey: FAKE_KEY }, cookie: admin.cookie })).status, 403, 'CSRF token required');
+
+  const saved = await admin.api('PUT', '/api/admin/ai', { apiKey: ` ${FAKE_KEY} ` });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.json.enabled, true);
+  assert.equal(saved.json.source, 'settings');
+  assert.equal(saved.json.keyHint, 'sk-ant-…abcd');
+  // the key never appears in any response
+  for (const r of [saved, await admin.api('GET', '/api/admin/ai'), await s.req('GET', '/api/session', { cookie: admin.cookie })]) {
+    assert.ok(!r.text.includes(FAKE_KEY) && !r.text.includes('ABCDEFGHIJ'), 'key must not be returned');
+  }
+  assert.equal((await s.req('GET', '/api/session', { cookie: editor.cookie })).json.ai.enabled, true);
+
+  // encrypted at rest: not in the database file, and the key file is private
+  const raw = s.app.db.prepare("SELECT value FROM settings WHERE name = 'anthropic_api_key'").get().value;
+  assert.match(raw, /^v1:/);
+  assert.ok(!raw.includes('ABCDEFGHIJ'));
+  const fs = require('fs');
+  const path = require('path');
+  assert.equal(fs.statSync(path.join(s.dataDir, 'secret.key')).mode & 0o777, 0o600);
+  assert.ok(!fs.readFileSync(path.join(s.dataDir, 'ideamap.db')).includes(FAKE_KEY), 'plain key not in the db file');
+
+  // remove it
+  const removed = await admin.api('PUT', '/api/admin/ai', { removeKey: true });
+  assert.equal(removed.json.enabled, false);
+  assert.equal(removed.json.source, 'none');
+  assert.equal(s.app.db.prepare("SELECT 1 FROM settings WHERE name = 'anthropic_api_key'").get(), undefined);
+});
+
+test('settings: a saved key survives restart but is unreadable without the key file', async (t) => {
+  const { open } = require('../src/settings');
+  const Database = require('better-sqlite3');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'idm-set-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const db = new Database(path.join(dir, 'x.db'));
+  const a = open(db, dir);
+  a.setSecret('k', 'hello secret');
+  assert.equal(open(db, dir).getSecret('k'), 'hello secret', 'same key file: readable after a restart');
+  fs.unlinkSync(path.join(dir, 'secret.key'));
+  assert.equal(open(db, dir).getSecret('k'), null, 'new key file: old value is unreadable, not an error');
+  const tampered = db.prepare("SELECT value FROM settings WHERE name='k'").get().value;
+  db.prepare("UPDATE settings SET value = ? WHERE name='k'").run(tampered.slice(0, -3) + 'AAA');
+  assert.equal(open(db, dir).getSecret('k'), null);
+});
+
+test('settings: model, effort, limits, switches validate and apply to the very next request', async (t) => {
+  const claude = fakeClaude(answer('ok'));
+  const w = await world(claude);
+  t.after(() => w.s.close());
+  const put = (b) => w.admin.api('PUT', '/api/admin/ai', b);
+  assert.equal((await put({ model: 'gpt-4' })).status, 400);
+  assert.equal((await put({ model: 'claude-opus-5-5; drop table' })).status, 400);
+  assert.equal((await put({ effort: 'extreme' })).status, 400);
+  assert.equal((await put({ perHour: 0 })).status, 400);
+  assert.equal((await put({ perHour: 5000 })).status, 400);
+  assert.equal((await put({ perHour: 'lots' })).status, 400);
+  assert.equal((await put({ on: 'yes' })).status, 400);
+
+  assert.equal((await put({ model: 'claude-sonnet-5-5', effort: 'low', fallback: false, perHour: 2 })).status, 200);
+  await ask(w.editor, w.map, { message: 'hi' });
+  const p = claude.calls.at(-1);
+  assert.equal(p.model, 'claude-sonnet-5-5');
+  assert.equal(p.output_config.effort, 'low');
+  assert.equal(p.fallbacks, undefined);
+  await ask(w.editor, w.map, { message: 'again' });
+  assert.equal((await ask(w.editor, w.map, { message: 'third' })).status, 429, 'new hourly limit of 2 applies at once');
+
+  // switching Claude off blocks everyone straight away and hides it from the session
+  await put({ on: false });
+  assert.equal((await ask(w.admin, w.map, { message: 'hi' })).status, 503);
+  assert.equal((await w.s.req('GET', '/api/session', { cookie: w.admin.cookie })).json.ai.enabled, false);
+  await put({ on: true });
+  assert.equal((await ask(w.admin, w.map, { message: 'hi' })).status, 200);
+});
+
+test('auto-apply policy is exposed to the editor, and deletions are flagged as destructive', async (t) => {
+  const claude = fakeClaude((params) => {
+    const u = params.messages.at(-1).content;
+    const ref = (x) => u.match(new RegExp(`\\[(n\\d+)\\] "${x}"`))[1];
+    return /remove/.test(u) ? answer('Removing.', [change({ action: 'delete', ref: ref('Events') })]) : answer('Adding.', [change({ parent: ref('Channels'), text: 'Podcasts' })]);
+  });
+  const w = await world(claude);
+  t.after(() => w.s.close());
+  assert.equal((await w.s.req('GET', '/api/session', { cookie: w.editor.cookie })).json.ai.autoApply, true);
+  assert.equal((await w.admin.api('PUT', '/api/admin/ai', { autoApply: false })).json.autoApply, false);
+  assert.equal((await w.s.req('GET', '/api/session', { cookie: w.editor.cookie })).json.ai.autoApply, false);
+  assert.equal((await ask(w.editor, w.map, { message: 'add one' })).json.destructive, false);
+  assert.equal((await ask(w.editor, w.map, { message: 'remove events' })).json.destructive, true);
+  assert.equal((await ask(w.editor, w.map, { message: 'nothing' })).json.destructive, false);
+});
+
+test('Claude adding a long idea, or widening a left-side idea, never overlaps its parent', async (t) => {
+  const claude = fakeClaude((params) => {
+    const u = params.messages.at(-1).content;
+    const ref = (x) => u.match(new RegExp(`\\[(n\\d+)\\] "${x}"`))[1];
+    return answer('ok', [
+      change({ parent: ref('Email'), text: 'A quite long idea that needs a lot of room to fit' }),
+      change({ action: 'rename', ref: ref('Search'), text: 'Search engine marketing with long tail keyword research' }),
+    ]);
+  });
+  const w = await world(claude);
+  t.after(() => w.s.close());
+  const before = await w.doc();
+  const r = await ask(w.editor, w.map, { message: 'x' });
+  const next = D.clone(before);
+  assert.ok(D.applyOp(next, r.json.ops).ok);
+  const box = (id) => ({ id, x: next.nodes[id].x, y: next.nodes[id].y, ...D.sizeOf(next, id) });
+  const ids = Object.keys(next.nodes);
+  for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+    const a = box(ids[i]), b = box(ids[j]);
+    // only compare nodes the proposal touched, against everything else
+    if (!(byText(next, 'Search engine marketing with long tail keyword research') && [a.id, b.id].some((x) => /long|Search engine/.test(next.nodes[x].text)))) continue;
+    assert.equal(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h, false, `${next.nodes[a.id].text} overlaps ${next.nodes[b.id].text}`);
+  }
 });

@@ -117,6 +117,7 @@ function translate(doc, parsed, refs) {
   const ops = [];
   const changes = [];
   let skipped = 0;
+  let needsTidy = false; // a reworded idea that grows taller would run into its neighbours
   const textOf = (id) => short(work.nodes[id] && work.nodes[id].text);
   const list = Array.isArray(parsed.changes) ? parsed.changes.slice(0, MAX_CHANGES) : [];
   skipped += Math.max(0, (Array.isArray(parsed.changes) ? parsed.changes.length : 0) - list.length);
@@ -131,7 +132,7 @@ function translate(doc, parsed, refs) {
       if (!parentId || !work.nodes[parentId] || !text) { skipped++; continue; }
       const dup = work.nodes[parentId].children.some((k) => work.nodes[k].text.trim().toLowerCase() === text.toLowerCase());
       if (dup) { skipped++; continue; }
-      const pos = Doc.suggestChildPos(work, parentId);
+      const pos = Doc.suggestChildPos(work, parentId, undefined, text);
       const op = { type: 'add', id: Doc.newId(), parent: parentId, text, x: pos.x, y: pos.y };
       if (c.color && Doc.COLORS.includes(c.color)) op.color = c.color;
       if (!Doc.applyOp(work, op).ok) { skipped++; continue; }
@@ -141,9 +142,18 @@ function translate(doc, parsed, refs) {
     } else if (c.action === 'rename') {
       if (!id || !work.nodes[id] || !text) { skipped++; continue; }
       const before = textOf(id);
+      const oldW = Doc.sizeOf(work, id).w;
+      const oldH = Doc.sizeOf(work, id).h;
       const op = { type: 'text', id, text };
       if (!Doc.applyOp(work, op).ok) { skipped++; continue; }
       ops.push(op);
+      if (Doc.sizeOf(work, id).h > oldH) needsTidy = true;
+      // a left-side idea keeps its right edge when its wording gets wider or narrower
+      const dw = oldW - Doc.sizeOf(work, id).w;
+      if (dw !== 0 && id !== work.rootId && Doc.sideOf(work, id) < 0) {
+        const mv = { type: 'move', id, dx: dw, dy: 0 };
+        if (Doc.applyOp(work, mv).ok) ops.push(mv);
+      }
       changes.push({ kind: 'rename', label: `Rename “${before}” to “${short(text)}”` });
     } else if (c.action === 'color') {
       if (!id || !work.nodes[id] || !Doc.COLORS.includes(c.color)) { skipped++; continue; }
@@ -153,7 +163,7 @@ function translate(doc, parsed, refs) {
       changes.push({ kind: 'color', label: `Colour “${textOf(id)}” ${c.color}` });
     } else if (c.action === 'move') {
       if (!id || !parentId || !work.nodes[id] || !work.nodes[parentId]) { skipped++; continue; }
-      const pos = Doc.suggestChildPos(work, parentId);
+      const pos = Doc.suggestChildPos(work, parentId, undefined, work.nodes[id].text);
       const label = `Move “${textOf(id)}” under “${textOf(parentId)}”`;
       const re = { type: 'reparent', id, parent: parentId };
       const probe = Doc.clone(work);
@@ -177,7 +187,7 @@ function translate(doc, parsed, refs) {
     }
   }
 
-  if (parsed.tidy === true && ops.length) {
+  if ((parsed.tidy === true || needsTidy) && ops.length) {
     const pos = Doc.tidy(work);
     const moved = {};
     let any = false;
@@ -207,7 +217,7 @@ function translate(doc, parsed, refs) {
       skipped += ops.length;
     }
   }
-  return { ops: batch, changes, skipped };
+  return { ops: batch, changes, skipped, destructive: !!batch && changes.some((c) => c.kind === 'delete') };
 }
 
 function cleanHistory(history) {
@@ -231,14 +241,16 @@ function cleanHistory(history) {
   return fixed;
 }
 
-function create({ client, config }) {
+// `runtime()` returns the current settings each time, so changes made on the Settings page apply immediately:
+// { client, model, effort, perHour, fallback }
+function create({ runtime }) {
   const hits = new Map(); // userId -> timestamps of recent requests
   const inflight = new Set();
 
-  function checkRate(userId) {
+  function checkRate(userId, perHour) {
     const now = Date.now();
     const recent = (hits.get(userId) || []).filter((t) => now - t < 3600 * 1000);
-    if (recent.length >= config.aiPerHour) {
+    if (recent.length >= perHour) {
       hits.set(userId, recent);
       const wait = Math.ceil((recent[0] + 3600 * 1000 - now) / 60000);
       throw new AiError(429, `You have used your Claude requests for this hour. Try again in about ${wait} minute${wait === 1 ? '' : 's'}.`);
@@ -247,20 +259,20 @@ function create({ client, config }) {
     hits.set(userId, recent);
   }
 
-  async function call(system, messages) {
+  async function call(rt, system, messages) {
     const params = {
-      model: config.aiModel,
+      model: rt.model,
       max_tokens: 8000,
       system,
       messages,
-      output_config: { effort: config.aiEffort, format: { type: 'json_schema', schema: SCHEMA } },
+      output_config: { effort: rt.effort, format: { type: 'json_schema', schema: SCHEMA } },
     };
-    if (config.aiFallback) {
+    if (rt.fallback) {
       params.betas = [FALLBACK_BETA];
       params.fallbacks = 'default';
     }
     try {
-      return await client.beta.messages.create(params);
+      return await rt.client.beta.messages.create(params);
     } catch (e) {
       if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) {
         console.error('Claude API key problem:', e.status, e.message);
@@ -295,22 +307,23 @@ function create({ client, config }) {
   }
 
   async function ask({ userId, doc, title, selected, message, history }) {
-    if (!client) throw new AiError(503, 'Claude is not switched on for this server yet.');
+    const rt = runtime();
+    if (!rt.client) throw new AiError(503, 'Claude is not switched on for this server yet.');
     const text = typeof message === 'string' ? message.trim() : '';
     if (!text) throw new AiError(400, 'Type a request for Claude first.');
     if (text.length > 2000) throw new AiError(400, 'That request is too long (2,000 characters at most).');
     const past = cleanHistory(history);
     if (inflight.has(userId)) throw new AiError(409, 'Claude is still working on your previous request.');
-    checkRate(userId);
+    checkRate(userId, rt.perHour);
     inflight.add(userId);
     try {
       const ctx = buildContext(doc, title, typeof selected === 'string' ? selected : null);
       const messages = [...past, { role: 'user', content: `${ctx.text}\nRequest: ${text}` }];
-      const res = await call(SYSTEM_PROMPT, messages);
+      const res = await call(rt, SYSTEM_PROMPT, messages);
       const parsed = parseAnswer(res);
       const out = translate(doc, parsed, ctx.refs);
-      console.log(`claude: model=${res.model || config.aiModel} in=${res.usage && res.usage.input_tokens} out=${res.usage && res.usage.output_tokens} changes=${out.changes.length} skipped=${out.skipped}`);
-      return { reply: parsed.reply.trim().slice(0, 2000), changes: out.changes, ops: out.ops, skipped: out.skipped };
+      console.log(`claude: model=${res.model || rt.model} in=${res.usage && res.usage.input_tokens} out=${res.usage && res.usage.output_tokens} changes=${out.changes.length} skipped=${out.skipped}`);
+      return { reply: parsed.reply.trim().slice(0, 2000), changes: out.changes, ops: out.ops, skipped: out.skipped, destructive: out.destructive };
     } finally {
       inflight.delete(userId);
     }
@@ -318,21 +331,22 @@ function create({ client, config }) {
 
   // Admin check that exercises exactly the same request path as a real question.
   async function test() {
-    if (!client) throw new AiError(503, 'ANTHROPIC_API_KEY is not set on the server.');
+    const rt = runtime();
+    if (!rt.client) throw new AiError(503, 'No Claude API key is saved yet. Add one on the Settings page.');
     try {
       const doc = Doc.newDoc('Test idea');
       const ctx = buildContext(doc, 'Connection test', null);
-      const res = await call(SYSTEM_PROMPT, [{ role: 'user', content: `${ctx.text}\nRequest: Add one idea called "It works" under the central idea.` }]);
+      const res = await call(rt, SYSTEM_PROMPT, [{ role: 'user', content: `${ctx.text}\nRequest: Add one idea called "It works" under the central idea.` }]);
       const parsed = parseAnswer(res);
       const out = translate(doc, parsed, ctx.refs);
-      return { ok: true, model: res.model || config.aiModel, proposed: out.changes.length };
+      return { ok: true, model: res.model || rt.model, proposed: out.changes.length };
     } catch (e) {
       if (e instanceof AiError && e.detail) e.message += ' Details: ' + e.detail; // admins only: this route needs the admin role
       throw e;
     }
   }
 
-  return { enabled: !!client, ask, test };
+  return { ask, test };
 }
 
 module.exports = { create, AiError, buildContext, translate, SCHEMA, SYSTEM_PROMPT, cleanHistory };

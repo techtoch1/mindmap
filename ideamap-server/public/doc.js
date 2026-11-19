@@ -186,10 +186,11 @@
   }
 
   // Where to drop a brand-new child so it does not land on top of its siblings.
-  function suggestChildPos(doc, parentId, dirOverride) {
+  // `text` is the idea about to be placed: a left-side idea is positioned by its left edge, so its real width matters.
+  function suggestChildPos(doc, parentId, dirOverride, text) {
     const p = doc.nodes[parentId];
     const ps = sizeOf(doc, parentId);
-    const w = nodeSize('', false).w;
+    const w = nodeSize(text || '', false).w;
     let dir;
     if (dirOverride === 1 || dirOverride === -1) dir = dirOverride;
     else if (parentId === doc.rootId) dir = p.children.length % 2 === 0 ? 1 : -1;
@@ -379,6 +380,103 @@
     for (let i = inverses.length - 1; i >= 0; i--) applyOp(doc, inverses[i]);
   }
 
+
+  /* ---------- outline copy/paste, duplicate, search (used by the editor) ---------- */
+
+  // A branch as indented text ("- idea" lines). Round-trips through parseOutline.
+  function toOutline(doc, id) {
+    const lines = [];
+    const walk = (nid, depth) => {
+      const n = doc.nodes[nid];
+      lines.push('  '.repeat(depth) + '- ' + n.text.replace(/\s*\n\s*/g, ' ').trim());
+      for (const c of n.children) walk(c, depth + 1);
+    };
+    if (doc.nodes[id]) walk(id, 0);
+    return lines.join('\n');
+  }
+
+  const OUTLINE_LINE_CAP = 240;
+  const OUTLINE_TEXT_CAP = 200;
+
+  // Plain text -> [{ depth, text }]. Understands indentation (spaces or tabs, any consistent width),
+  // bullets (- * • –), numbering (1. 2)) and markdown headings. Blank lines are ignored.
+  function parseOutline(text) {
+    const items = [];
+    const stack = [];
+    for (const raw of String(text || '').replace(/\r\n?/g, '\n').split('\n')) {
+      if (!raw.trim()) continue;
+      const expanded = raw.replace(/\t/g, '    ');
+      const indent = expanded.match(/^ */)[0].length;
+      const body = expanded.trim().replace(/^#{1,6}\s+/, '').replace(/^([-*•–—]|\d+[.)])(\s+|$)/, '').replace(/\s+/g, ' ').trim();
+      if (!body) continue;
+      while (stack.length && stack[stack.length - 1] > indent) stack.pop();
+      if (!stack.length || stack[stack.length - 1] < indent) stack.push(indent);
+      items.push({ depth: stack.length - 1, text: cleanText(body).slice(0, OUTLINE_TEXT_CAP) });
+    }
+    return items;
+  }
+
+  // Ideas pasted from text, as ONE batch of add operations under parentId.
+  function opsFromOutline(doc, parentId, text) {
+    if (!doc.nodes[parentId]) return { error: 'Select an idea to paste under' };
+    const all = parseOutline(text);
+    if (!all.length) return { error: 'There is no text to turn into ideas' };
+    const items = all.slice(0, OUTLINE_LINE_CAP);
+    if (count(doc) + items.length > MAX_NODES) return { error: 'This map does not have room for that many ideas' };
+    const work = clone(doc);
+    const parents = [parentId];
+    const ops = [];
+    const base = items[0].depth;
+    for (const it of items) {
+      const depth = Math.max(0, Math.min(it.depth - base, parents.length - 1));
+      const parent = parents[depth];
+      const pos = suggestChildPos(work, parent, undefined, it.text);
+      const op = { type: 'add', id: newId(), parent, text: it.text, x: pos.x, y: pos.y };
+      const r = applyOp(work, op);
+      if (!r.ok) return { error: r.error };
+      ops.push(op);
+      parents.length = depth + 1;
+      parents.push(op.id);
+    }
+    return { op: { type: 'batch', ops }, count: ops.length, truncated: all.length > items.length };
+  }
+
+  // A copy of a branch placed just below the original, as ONE batch of add operations.
+  function duplicateBranch(doc, id) {
+    const src = doc.nodes[id];
+    if (!src) return { error: 'Idea not found' };
+    if (!src.parent) return { error: 'The central idea cannot be duplicated' };
+    const ids = subtreeIds(doc, id);
+    if (ids.length > MAX_BATCH) return { error: 'That branch is too large to duplicate (' + MAX_BATCH + ' ideas at most)' };
+    if (count(doc) + ids.length > MAX_NODES) return { error: 'This map does not have room for a copy' };
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const nid of ids) {
+      const n = doc.nodes[nid];
+      top = Math.min(top, n.y);
+      bottom = Math.max(bottom, n.y + sizeOf(doc, nid).h);
+    }
+    const dy = Math.round(bottom - top + 36);
+    const map = new Map(ids.map((nid) => [nid, newId()]));
+    const parent = doc.nodes[src.parent];
+    const ops = ids.map((nid) => {
+      const n = doc.nodes[nid];
+      const op = { type: 'add', id: map.get(nid), parent: nid === id ? parent.id : map.get(n.parent), text: nid === id ? (n.text + ' (copy)').slice(0, MAX_TEXT) : n.text, x: n.x, y: n.y + dy, color: n.color };
+      if (nid === id) op.index = parent.children.indexOf(id) + 1;
+      return op;
+    });
+    const batch = { type: 'batch', ops };
+    if (!applyOp(clone(doc), batch).ok) return { error: 'Could not duplicate that branch' };
+    return { op: batch, count: ops.length, newRoot: map.get(id) };
+  }
+
+  // Ids of ideas whose text contains the query (case-insensitive), in reading order.
+  function search(doc, query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return [];
+    return subtreeIds(doc, doc.rootId).filter((id) => doc.nodes[id].text.toLowerCase().includes(q));
+  }
+
   /* ---------- import / export ---------- */
 
   function toTree(doc, title) {
@@ -448,5 +546,6 @@
     nodeSize, sizeOf, tidy, sideOf, suggestChildPos,
     isClientOp, applyOp,
     toTree, fromTree, validDoc, searchText,
+    toOutline, parseOutline, opsFromOutline, duplicateBranch, search,
   };
 });

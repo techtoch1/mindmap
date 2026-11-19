@@ -19,13 +19,18 @@ A multi-user, real-time mind-mapping app for marketing ideas, by Aligned.
 - **Fold** branches. Fold state is per person and saved for you only.
 - **Undo/redo of your own changes** (Ctrl+Z / Ctrl+Shift+Z). It never reverts other people's edits.
 - Live cursors, live selections and avatars for everyone in the map. View-only people can watch and follow along.
+- **Right-click** an idea or the empty board for a menu (long-press on a phone). The map library has one too.
+- **Paste ideas fast:** copy a bullet list or outline from a doc or email and press Ctrl+V on the board to turn it into ideas. Ctrl+C copies a branch as an outline. Duplicate a branch from the menu.
+- **Find** an idea in the map (Ctrl+F), fold or unfold every branch, and press `?` for the shortcut sheet.
 - Keyboard: `Tab` add idea, `Enter` add sibling, `F2` edit, `Del` delete, arrows to move around, `+`/`-`/`0` zoom and fit. Pinch-zoom on touch screens.
 
 **Claude assistant (optional)**
 - **Ask Claude** opens a side panel in the editor. Ask it to add ideas, rename, recolour, move, delete or tidy, or just ask for advice.
-- Claude only **proposes**. You see a list of changes and click **Apply**. The whole proposal is one undo step (Ctrl+Z) and goes live for everyone in the map. **Dismiss** throws it away.
+- **Claude takes actions on the board.** It can add, rename, recolour, move, delete and tidy. In **auto mode** (the default) its changes are applied straight away as one undo step, the new ideas flash, and the chat card has an **Undo** button. Anything that **deletes** ideas always waits for a click.
+- An admin can require review for everyone (Settings), and each person can switch auto mode off in the panel. In review mode Claude shows a list of changes and you click **Apply** or **Dismiss**.
+- **Right-click an idea** for one-click Claude actions: brainstorm sub-ideas, expand into a plan, reword.
 - Editors and admins only. Viewers do not see it.
-- Off until `ANTHROPIC_API_KEY` is set. See [Claude assistant setup](#claude-assistant-setup).
+- Off until an admin adds an API key on the **Settings** page. See [Claude assistant setup](#claude-assistant-setup).
 
 **Brand**
 - IBM Plex Sans (self-hosted, SIL OFL), Poseidon blue `#187bcd`, charcoal `#333334`, light and dark themes (follows the system, switchable from the account menu).
@@ -54,7 +59,7 @@ All settings are environment variables. See `.env.example`.
 | `COOKIE_SECURE` | off | Set `1` on HTTPS: `__Host-` Secure session cookie and HSTS |
 | `PUBLIC_URL` | none | Optional extra allowed origin, e.g. `https://ideamap.aligned-tech.com` |
 | `SETUP_TOKEN` | none | Optional. If set, creating the first admin requires this secret |
-| `ANTHROPIC_API_KEY` | none | Switches the Claude assistant on. Server-side only, never sent to browsers |
+| `ANTHROPIC_API_KEY` | none | Optional fallback key. Prefer the Settings page, which overrides this |
 | `CLAUDE_MODEL` | `claude-opus-5-5` | Model used for the assistant |
 | `CLAUDE_EFFORT` | `medium` | `low`, `medium`, `high`, `xhigh` or `max`. Higher thinks longer and costs more |
 | `AI_REQUESTS_PER_HOUR` | `60` | Per person, to cap spend |
@@ -63,20 +68,19 @@ All settings are environment variables. See `.env.example`.
 ## Claude assistant setup
 
 1. Create an API key at https://console.anthropic.com (Settings, API keys). Set a monthly spend limit there too.
-2. Add it to the server's settings file **without** echoing it on screen or into shell history:
+2. Sign in as an admin, open **Settings**, paste the key under *Claude assistant* and press **Save key**. No restart is needed.
+3. Press **Test connection**. It runs the exact request a real question uses and shows any error in plain words.
 
-   ```bash
-   read -s -p "Paste your Anthropic API key: " KEY; echo
-   printf 'ANTHROPIC_API_KEY=%s\n' "$KEY" >> ~/ideamap.env; unset KEY
-   sudo systemctl restart ideamap
-   ```
-3. Sign in as admin, open **People**, and press **Test connection** under *Claude assistant*. It runs the exact request a real question uses and shows any error in plain words.
+The same page controls the model, thinking effort, the hourly limit, whether Claude is on at all, whether changes apply automatically, and the fallback. Changes apply immediately.
+
+Where the key lives: it is stored **encrypted** (AES-256-GCM) in the database, with the encryption key in `DATA_DIR/secret.key` (mode 600), separate from the database file. The Settings page only ever shows the last four characters. **Back up `secret.key` together with `ideamap.db`**, or you will need to paste the key again after a restore. A key saved on the Settings page overrides the `ANTHROPIC_API_KEY` environment variable, which still works as a fallback.
 
 How it stays safe:
 - The key lives only in the server's environment. Browsers never receive it.
 - Claude cannot change a map. It returns a proposal in a fixed format. The server turns it into the same operations the editor uses, dry-runs them on a copy of the map, drops anything invalid (unknown ideas, deleting the central idea, duplicates), and the browser applies the result only when a person clicks **Apply**.
 - Idea text and the map title are given to Claude as data, with instructions to ignore any commands found in them. A teammate typing "ignore your rules" into an idea cannot make changes happen, because nothing is applied without a click.
-- Limits: 60 requests per person per hour, one at a time per person, 2,000 characters per request, at most 100 changes per proposal.
+- Limits (adjustable in Settings): 60 requests per person per hour, one at a time per person, 2,000 characters per request, at most 100 changes per proposal.
+- Auto mode is limited on purpose: deletions always need a click, the central idea can never be deleted, and everything is one undo step, attributed to the person who asked.
 - Privacy: the map's title and idea text are sent to Anthropic whenever someone asks Claude. Nothing is sent otherwise. Do not enable this if maps may hold information that must not leave your servers.
 - Cost: you pay Anthropic per request. A typical request on the default model is a few cents. `CLAUDE_MODEL=claude-sonnet-5-5` is roughly half the price.
 
@@ -119,10 +123,11 @@ src/realtime.js      WebSocket hub: rooms, ops, undo/redo, presence
 src/db.js            SQLite schema
 src/security.js      scrypt, tokens, login throttle
 src/ai.js            Claude assistant: prompt, proposal checking, limits
+src/settings.js      encrypted admin settings (API key)
 src/templates.js     starter maps
 public/doc.js        document engine shared by server and browser
 public/editor.js     canvas editor     public/app.js  screens and routing
-public/ai-panel.js   Ask Claude panel
+public/ai-panel.js   Ask Claude panel     public/context-menu.js  right-click menu
 test/                node:test suites (npm test)
 ```
 

@@ -187,3 +187,131 @@ test('import tidies maps that have no positions and rejects junk', () => {
   for (let i = 0; i < 100; i++) deep = { text: 'n', children: [deep] };
   assert.throws(() => D.fromTree({ format: 'idea-map', root: deep }), /deeply/);
 });
+
+function branchy() {
+  const doc = D.newDoc('Root');
+  const add = (id, parent, text, color) => assert.ok(D.applyOp(doc, { type: 'add', id, parent, text, x: 0, y: 0, ...(color ? { color } : {}) }).ok);
+  add('aaaa', doc.rootId, 'Channels', 'blue');
+  add('bbbb', 'aaaa', 'Email');
+  add('cccc', 'aaaa', 'LinkedIn');
+  add('dddd', 'cccc', 'Founder story', 'green');
+  add('eeee', doc.rootId, 'Offer');
+  D.applyOp(doc, { type: 'layout', pos: D.tidy(doc) });
+  return doc;
+}
+const shape = (doc, id) => ({ text: doc.nodes[id].text, color: doc.nodes[id].color, kids: doc.nodes[id].children.map((c) => shape(doc, c)) });
+
+test('outline: copy a branch as text and paste it back as the same structure', () => {
+  const doc = branchy();
+  const text = D.toOutline(doc, 'aaaa');
+  assert.equal(text, '- Channels\n  - Email\n  - LinkedIn\n    - Founder story');
+  const r = D.opsFromOutline(doc, 'eeee', text);
+  assert.equal(r.count, 4);
+  assert.ok(D.isClientOp(r.op));
+  const pasted = D.clone(doc);
+  const applied = D.applyOp(pasted, r.op);
+  assert.ok(applied.ok, applied.error);
+  const copy = shape(pasted, pasted.nodes.eeee.children[0]);
+  assert.deepEqual(copy.kids.map((k) => k.text), ['Email', 'LinkedIn']);
+  assert.equal(copy.text, 'Channels');
+  assert.equal(copy.kids[1].kids[0].text, 'Founder story');
+  assert.ok(D.validDoc(pasted));
+  assert.ok(D.applyOp(pasted, applied.inverse).ok);
+  assert.deepEqual(pasted, doc, 'one undo removes everything pasted');
+});
+
+test('outline: understands bullets, numbering, tabs, headings, odd indents and blank lines', () => {
+  const t = (s) => D.parseOutline(s).map((i) => i.depth + ':' + i.text);
+  assert.deepEqual(t('- a\n- b\n  - c\n  - d\n    - e\n- f'), ['0:a', '0:b', '1:c', '1:d', '2:e', '0:f']);
+  assert.deepEqual(t('1. one\n2) two\n\n   • nested\n\t\t* deeper'), ['0:one', '0:two', '1:nested', '2:deeper']);
+  assert.deepEqual(t('# Title\n## Sub\n- item'), ['0:Title', '0:Sub', '0:item']);
+  assert.deepEqual(t('plain\n   indented by three\n      indented by six\nback'), ['0:plain', '1:indented by three', '2:indented by six', '0:back']);
+  assert.deepEqual(t('a\r\n  b\r\n'), ['0:a', '1:b']);
+  assert.deepEqual(t('   \n\n'), []);
+  assert.deepEqual(t('- \n-   \n- real'), ['0:real']);
+  assert.equal(D.parseOutline('x'.repeat(500))[0].text.length, 200);
+  // a deep indent jump never skips a level
+  assert.deepEqual(t('a\n          far'), ['0:a', '1:far']);
+});
+
+test('outline: pasting under a chosen idea, a single line, markup stays text, limits hold', () => {
+  const doc = branchy();
+  assert.equal(D.opsFromOutline(doc, 'nope', 'x').error, 'Select an idea to paste under');
+  assert.match(D.opsFromOutline(doc, 'aaaa', '  \n ').error, /no text/);
+  const one = D.opsFromOutline(doc, 'bbbb', 'TikTok duets');
+  assert.equal(one.count, 1);
+  const html = D.opsFromOutline(doc, 'bbbb', '<img src=x onerror=alert(1)>');
+  assert.equal(html.op.ops[0].text, '<img src=x onerror=alert(1)>', 'kept as plain text; the UI only ever uses textContent');
+  const many = D.opsFromOutline(doc, 'aaaa', Array.from({ length: 400 }, (_, i) => '- idea ' + i).join('\n'));
+  assert.equal(many.count, 240);
+  assert.equal(many.truncated, true);
+  const full = D.newDoc('Full');
+  for (let i = 0; i < D.MAX_NODES - 1; i++) D.applyOp(full, { type: 'add', id: 'n' + String(i).padStart(6, '0'), parent: full.rootId, text: '', x: 0, y: 0 });
+  assert.match(D.opsFromOutline(full, full.rootId, '- one more').error, /room/);
+});
+
+test('outline: pasted ideas do not land on top of each other', () => {
+  const doc = branchy();
+  const r = D.opsFromOutline(doc, 'aaaa', '- one\n- two\n- three\n  - three a\n  - three b\n- four');
+  const next = D.clone(doc);
+  D.applyOp(next, r.op);
+  const ids = D.subtreeIds(next, 'aaaa');
+  const boxes = ids.map((id) => ({ id, x: next.nodes[id].x, y: next.nodes[id].y, ...D.sizeOf(next, id) }));
+  for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+    const a = boxes[i], b = boxes[j];
+    assert.equal(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h, false, `${a.id} overlaps ${b.id}`);
+  }
+});
+
+test('duplicate branch: same shape and colours, placed below, right after the original, one undo', () => {
+  const doc = branchy();
+  const r = D.duplicateBranch(doc, 'aaaa');
+  assert.equal(r.count, 4);
+  assert.ok(D.isClientOp(r.op));
+  const next = D.clone(doc);
+  const applied = D.applyOp(next, r.op);
+  assert.ok(applied.ok, applied.error);
+  const kids = next.nodes[next.rootId].children;
+  assert.deepEqual(kids.map((k) => next.nodes[k].text), ['Channels', 'Channels (copy)', 'Offer'], 'copy sits right after the original');
+  const copy = next.nodes[r.newRoot];
+  assert.equal(copy.color, 'blue');
+  assert.deepEqual(shape(next, r.newRoot).kids.map((k) => k.text), ['Email', 'LinkedIn']);
+  assert.equal(shape(next, r.newRoot).kids[1].kids[0].color, 'green');
+  assert.ok(copy.y > next.nodes.aaaa.y, 'placed below the original');
+  const ids = new Set(D.subtreeIds(doc, 'aaaa'));
+  for (const id of D.subtreeIds(next, r.newRoot)) assert.ok(!ids.has(id), 'every copied idea has a new id');
+  assert.ok(D.applyOp(next, applied.inverse).ok);
+  assert.deepEqual(next, doc);
+  assert.match(D.duplicateBranch(doc, doc.rootId).error, /central idea/);
+  assert.match(D.duplicateBranch(doc, 'nope').error, /not found/);
+});
+
+test('search finds ideas by text, case-insensitively, in reading order', () => {
+  const doc = branchy();
+  const texts = (q) => D.search(doc, q).map((id) => doc.nodes[id].text);
+  assert.deepEqual(texts('l'), ['Channels', 'Email', 'LinkedIn', 'Founder story'.includes('l') ? 'Founder story' : null].filter(Boolean).concat([]).filter((x) => x.toLowerCase().includes('l')));
+  assert.deepEqual(texts('LINKED'), ['LinkedIn']);
+  assert.deepEqual(texts('  '), []);
+  assert.deepEqual(texts('zzz'), []);
+});
+
+test('a long idea placed on the left side never lands on top of its parent', () => {
+  const doc = branchy();
+  D.applyOp(doc, { type: 'layout', pos: D.tidy(doc) });
+  const left = Object.values(doc.nodes).find((n) => n.parent && D.sideOf(doc, n.id) < 0 && n.parent === doc.rootId);
+  assert.ok(left, 'there is a branch on the left');
+  const text = 'A rather long idea with plenty of words in it';
+  const pos = D.suggestChildPos(doc, left.id, undefined, text);
+  const w = D.nodeSize(text, false).w;
+  assert.ok(pos.x + w <= left.x, `child right edge ${pos.x + w} must be left of parent edge ${left.x}`);
+  // pasted outlines and duplicates follow the same rule
+  const r = D.opsFromOutline(doc, left.id, '- ' + text + '\n  - Another fairly long sub idea here too');
+  const next = D.clone(doc);
+  assert.ok(D.applyOp(next, r.op).ok);
+  const box = (id) => ({ x: next.nodes[id].x, y: next.nodes[id].y, ...D.sizeOf(next, id) });
+  const parent = box(left.id);
+  for (const id of D.subtreeIds(next, left.id).slice(1)) {
+    const c = box(id);
+    assert.equal(parent.x < c.x + c.w && c.x < parent.x + parent.w && parent.y < c.y + c.h && c.y < parent.y + parent.h, false, 'overlaps its ancestor');
+  }
+});

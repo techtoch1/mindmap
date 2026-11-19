@@ -40,12 +40,43 @@ const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
 
 function createApp(config, deps = {}) {
   const db = dbmod.open(config.dataDir);
-  let anthropic = deps.anthropic || null;
-  if (!anthropic && config.anthropicApiKey) {
-    const Anthropic = require('@anthropic-ai/sdk');
-    anthropic = new Anthropic({ apiKey: config.anthropicApiKey, maxRetries: 2, timeout: 180000 });
+  const settings = require('./settings').open(db, config.dataDir);
+  const MODELS = [
+    { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (best results, default)' },
+    { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (about half the price)' },
+    { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 (fastest and cheapest)' },
+    { id: 'claude-fable-5-2', label: 'Claude Fable 5.2 (most capable, highest price)' },
+  ];
+  let clientCache = { key: null, client: null };
+  // Current Claude settings. Read on every request so changes on the Settings page apply immediately.
+  // A key saved in Settings wins over the ANTHROPIC_API_KEY environment variable.
+  function aiRuntime() {
+    const saved = settings.getSecret('anthropic_api_key');
+    const key = saved || config.anthropicApiKey || '';
+    const on = settings.get('ai_enabled') !== '0';
+    let client = deps.anthropic || null;
+    if (!client && key) {
+      if (clientCache.key !== key) {
+        const Anthropic = require('@anthropic-ai/sdk');
+        clientCache = { key, client: new Anthropic({ apiKey: key, maxRetries: 2, timeout: 180000 }) };
+      }
+      client = clientCache.client;
+    }
+    const fb = settings.get('ai_fallback');
+    return {
+      client: on ? client : null,
+      hasKey: !!client,
+      on,
+      source: saved ? 'settings' : config.anthropicApiKey ? 'env' : deps.anthropic ? 'injected' : 'none',
+      keyHint: key ? key.slice(0, 7) + '…' + key.slice(-4) : '',
+      model: settings.get('ai_model') || config.aiModel,
+      effort: settings.get('ai_effort') || config.aiEffort,
+      perHour: Number(settings.get('ai_per_hour')) || config.aiPerHour,
+      fallback: fb === null ? config.aiFallback : fb === '1',
+      autoApply: settings.get('ai_auto_apply') !== '0',
+    };
   }
-  const ai = aiMod.create({ client: anthropic, config });
+  const ai = aiMod.create({ runtime: aiRuntime });
   const COOKIE = config.cookieSecure ? '__Host-idm' : 'idm';
 
   const q = {
@@ -241,7 +272,7 @@ function createApp(config, deps = {}) {
   route('GET', '/api/session', null, ({ sess }) => ({
     needsSetup: q.userCount.get().n === 0,
     setupTokenRequired: !!config.setupToken,
-    ai: { enabled: ai.enabled },
+    ai: (() => { const r = aiRuntime(); return { enabled: !!r.client, autoApply: r.autoApply }; })(),
     user: sess ? sess.user : null,
     csrf: sess ? sess.csrf : null,
   }));
@@ -477,7 +508,43 @@ function createApp(config, deps = {}) {
     }
   });
 
-  route('GET', '/api/admin/ai', 'admin', () => ({ enabled: ai.enabled, model: config.aiModel, effort: config.aiEffort, perHour: config.aiPerHour, fallback: config.aiFallback }));
+  const aiStatus = () => {
+    const r = aiRuntime();
+    return { enabled: !!r.client, hasKey: r.hasKey, on: r.on, source: r.source, keyHint: r.keyHint, model: r.model, effort: r.effort, perHour: r.perHour, fallback: r.fallback, autoApply: r.autoApply, models: MODELS };
+  };
+
+  route('GET', '/api/admin/ai', 'admin', () => aiStatus());
+
+  route('PUT', '/api/admin/ai', 'admin', ({ body, sess }) => {
+    const bool = (v, name) => {
+      if (typeof v !== 'boolean') throw new HttpError(400, 'Bad value for ' + name);
+      return v ? '1' : '0';
+    };
+    if (body.removeKey === true) settings.delete('anthropic_api_key');
+    if (body.apiKey !== undefined) {
+      const k = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+      if (!/^sk-ant-[A-Za-z0-9_-]{20,300}$/.test(k)) throw new HttpError(400, 'That does not look like an Anthropic API key. It starts with sk-ant-');
+      settings.setSecret('anthropic_api_key', k);
+    }
+    if (body.on !== undefined) settings.set('ai_enabled', bool(body.on, 'on'));
+    if (body.fallback !== undefined) settings.set('ai_fallback', bool(body.fallback, 'fallback'));
+    if (body.autoApply !== undefined) settings.set('ai_auto_apply', bool(body.autoApply, 'autoApply'));
+    if (body.model !== undefined) {
+      if (!MODELS.some((m) => m.id === body.model)) throw new HttpError(400, 'Choose one of the listed models');
+      settings.set('ai_model', body.model);
+    }
+    if (body.effort !== undefined) {
+      if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(body.effort)) throw new HttpError(400, 'Bad effort level');
+      settings.set('ai_effort', body.effort);
+    }
+    if (body.perHour !== undefined) {
+      const n = Number(body.perHour);
+      if (!Number.isInteger(n) || n < 1 || n > 1000) throw new HttpError(400, 'Requests per hour must be between 1 and 1000');
+      settings.set('ai_per_hour', String(n));
+    }
+    console.log(`Claude settings updated by user ${sess.user.id}`); // never logs the key
+    return aiStatus();
+  });
 
   route('POST', '/api/admin/ai/test', 'admin', async () => {
     try {

@@ -57,6 +57,7 @@
     if (!state.user) return viewLogin();
     if ((m = hash.match(/^#\/map\/([A-Za-z0-9_-]+)$/))) return viewMap(m[1]);
     if (hash === '#/admin') return state.user.role === 'admin' ? viewAdmin() : navigate('#/');
+    if (hash === '#/settings') return state.user.role === 'admin' ? viewSettings() : navigate('#/');
     return viewLibrary();
   }
 
@@ -112,7 +113,7 @@
 
   function topbar() {
     const u = state.user;
-    const menuBtn = h('button', { class: 'btn ghost', type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, avatar(u), h('span', {}, u.name));
+    const menuBtn = h('button', { class: 'btn ghost', type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false' }, avatar(u), h('span', { class: 'lbl' }, u.name));
     const wrap = h('div', { class: 'menu-wrap' }, menuBtn);
     let menu = null;
     const close = () => {
@@ -141,7 +142,8 @@
     return h('header', { class: 'topbar' },
       h('a', { class: 'brand', href: '#/' }, logo(), 'Idea Map', h('small', {}, 'by Aligned')),
       h('span', { class: 'grow' }),
-      u.role === 'admin' ? h('a', { class: 'btn ghost', href: '#/admin' }, icon('users'), 'People') : null,
+      u.role === 'admin' ? h('a', { class: 'btn ghost', href: '#/admin', title: 'People', 'aria-label': 'People' }, icon('users'), h('span', { class: 'lbl' }, 'People')) : null,
+      u.role === 'admin' ? h('a', { class: 'btn ghost', href: '#/settings', title: 'Settings', 'aria-label': 'Settings' }, icon('settings'), h('span', { class: 'lbl' }, 'Settings')) : null,
       wrap);
   }
 
@@ -280,6 +282,24 @@
             canDelete ? small('Delete', 'trash', () => deleteMap(m)) : null)));
       }
       list.replaceChildren(...rows);
+      Array.from(list.querySelectorAll('.list-row:not(.list-head)')).forEach((el, i) => el.addEventListener('contextmenu', (ev) => mapMenu(ev, maps[i])));
+    }
+
+    function mapMenu(ev, m) {
+      ev.preventDefault();
+      const canDelete = u.role === 'admin' || (canEdit && m.ownerId === u.id);
+      window.IdeaMenu.open({
+        x: ev.clientX, y: ev.clientY, label: 'Map actions',
+        items: [
+          { heading: m.title },
+          { label: 'Open', icon: 'child', onClick: () => navigate('#/map/' + m.id) },
+          canEdit ? { label: 'Rename', icon: 'edit', onClick: () => renameMap(m) } : null,
+          canEdit ? { label: 'Duplicate', icon: 'copy', onClick: () => duplicateMap(m) } : null,
+          { label: 'Download JSON', icon: 'download', onClick: () => download('/api/maps/' + m.id + '/export', '') },
+          canDelete ? { separator: true } : null,
+          canDelete ? { label: 'Delete', icon: 'trash', danger: true, onClick: () => deleteMap(m) } : null,
+        ],
+      });
     }
 
     function renameMap(m) {
@@ -389,42 +409,11 @@
   /* ---------- admin ---------- */
   async function viewAdmin() {
     const usersBox = h('div', { class: 'card table-wrap' });
-    const claudeBox = h('div', { class: 'card', style: { padding: '16px' } });
     const invitesBox = h('div', { class: 'card table-wrap' });
     const role = h('select', { 'aria-label': 'Role for the new invite' }, ['editor', 'viewer', 'admin'].map((r) => h('option', { value: r }, ROLE_HELP[r])));
     const note = h('input', { type: 'text', maxlength: '80', placeholder: 'Who is this for? (optional, only you see it)', 'aria-label': 'Note' });
 
-    async function drawClaude() {
-      try {
-        const c = await api('GET', '/api/admin/ai');
-        const result = h('p', { class: 'small', role: 'status' });
-        const test = h('button', { class: 'btn', type: 'button', disabled: !c.enabled || undefined }, 'Test connection');
-        test.addEventListener('click', async () => {
-          test.disabled = true;
-          result.className = 'small muted';
-          result.textContent = 'Asking Claude…';
-          try {
-            const r = await api('POST', '/api/admin/ai/test');
-            result.className = 'small';
-            result.textContent = 'Working. Claude (' + r.model + ') answered and proposed ' + r.proposed + ' change.';
-          } catch (e) {
-            result.className = 'small error';
-            result.textContent = e.message;
-          } finally { test.disabled = false; }
-        });
-        claudeBox.replaceChildren(
-          h('div', { class: 'row', style: { flexWrap: 'wrap' } },
-            h('span', { class: 'badge ' + (c.enabled ? 'admin' : 'off') }, c.enabled ? 'On' : 'Off'),
-            h('span', {}, c.enabled
-              ? 'Model ' + c.model + ' · effort ' + c.effort + ' · ' + c.perHour + ' requests per person per hour'
-              : 'Not switched on. Add ANTHROPIC_API_KEY to the server settings and restart (see the README).'),
-            h('span', { class: 'grow' }), test),
-          result);
-      } catch (e) { claudeBox.replaceChildren(h('p', { class: 'error' }, e.message)); }
-    }
-
     async function load() {
-      drawClaude();
       try {
         const [u, i] = await Promise.all([api('GET', '/api/admin/users'), api('GET', '/api/admin/invites')]);
         drawUsers(u.users);
@@ -512,9 +501,117 @@
         h('div', { class: 'card', style: { padding: '16px' } }, h('div', { class: 'row', style: { flexWrap: 'wrap' } },
           h('div', { style: { flex: '1 1 260px' } }, role), h('div', { style: { flex: '2 1 260px' } }, note),
           h('button', { class: 'btn primary', type: 'button', onclick: createInvite }, icon('plus'), 'Create invite link')))),
-      h('section', { class: 'section' }, h('h2', {}, 'Claude assistant'), claudeBox),
       h('section', { class: 'section' }, h('h2', {}, 'Team'), usersBox),
       h('section', { class: 'section' }, h('h2', {}, 'Invites'), invitesBox)));
+    load();
+  }
+
+  /* ---------- settings (admin) ---------- */
+  async function viewSettings() {
+    const card = h('div', { class: 'card', style: { padding: '20px' } }, h('p', { class: 'muted' }, 'Loading…'));
+    root.replaceChildren(topbar(), h('main', { class: 'page', id: 'main' },
+      h('div', { class: 'page-head' }, h('a', { class: 'btn ghost sm', href: '#/' }, icon('back'), 'Maps'), h('h1', {}, 'Settings')),
+      h('section', { class: 'section', style: { marginTop: '0' } }, h('h2', {}, 'Claude assistant'), card)));
+
+    function check(label, help, checked) {
+      const input = h('input', { type: 'checkbox' });
+      input.checked = !!checked;
+      const id = 'c' + Math.random().toString(36).slice(2, 8);
+      input.id = id;
+      return { input, el: h('div', { class: 'check' }, input, h('label', { for: id }, label, h('small', {}, help))) };
+    }
+
+    async function load() {
+      try {
+        draw(await api('GET', '/api/admin/ai'));
+      } catch (e) {
+        card.replaceChildren(h('p', { class: 'error', role: 'alert' }, e.message));
+      }
+    }
+
+    function draw(st) {
+      const result = h('p', { class: 'small', role: 'status' });
+      const keyInput = h('input', { type: 'password', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Anthropic API key', placeholder: st.hasKey ? 'Paste a new key to replace it' : 'sk-ant-…' });
+      const saveKey = h('button', { class: 'btn primary', type: 'button' }, st.hasKey ? 'Replace key' : 'Save key');
+      saveKey.addEventListener('click', async () => {
+        const k = keyInput.value.trim();
+        if (!k) { result.className = 'small error'; result.textContent = 'Paste your Anthropic API key first.'; return; }
+        saveKey.disabled = true;
+        try {
+          const r = await api('PUT', '/api/admin/ai', { apiKey: k });
+          keyInput.value = '';
+          toast('Key saved. Press Test connection to check it.');
+          draw(r);
+        } catch (e) {
+          result.className = 'small error';
+          result.textContent = e.message;
+          saveKey.disabled = false;
+        }
+      });
+      const removeKey = st.source === 'settings' ? h('button', { class: 'btn danger', type: 'button', onclick: () => modal({
+        title: 'Remove the saved key?',
+        content: h('p', {}, 'Claude stops working for everyone until a new key is added.'),
+        buttons: [{ label: 'Cancel' }, { label: 'Remove key', danger: true, onClick: async () => {
+          try { draw(await api('PUT', '/api/admin/ai', { removeKey: true })); toast('Key removed'); } catch (e) { toast(e.message, { error: true }); }
+        } }],
+      }) }, 'Remove saved key') : null;
+
+      const on = check('Claude is switched on', 'Turn this off to hide Ask Claude for everyone without removing the key.', st.on);
+      const auto = check('Let Claude apply its changes straight away', 'People can still undo with Ctrl+Z, and changes that delete ideas always ask first. Turn this off to make every change wait for a click.', st.autoApply);
+      const fb = check('Retry on a fallback model if Claude declines', 'Recommended. If a request is declined for safety reasons, it is retried on another model automatically.', st.fallback);
+      const model = h('select', { 'aria-label': 'Model' }, st.models.map((m) => h('option', { value: m.id }, m.label)));
+      if (st.models.some((m) => m.id === st.model)) model.value = st.model;
+      else model.prepend(h('option', { value: '' }, st.model + ' (from the server environment)')), model.value = '';
+      const effort = h('select', { 'aria-label': 'Thinking effort' }, [['low', 'Low: fastest, lowest cost'], ['medium', 'Medium: balanced (default)'], ['high', 'High: more careful'], ['xhigh', 'Extra high'], ['max', 'Max: slowest, highest cost']].map(([v, l]) => h('option', { value: v }, l)));
+      effort.value = st.effort;
+      const perHour = h('input', { type: 'number', min: '1', max: '1000', step: '1', 'aria-label': 'Requests per person per hour', value: String(st.perHour) });
+
+      const save = h('button', { class: 'btn primary', type: 'button' }, 'Save settings');
+      save.addEventListener('click', async () => {
+        save.disabled = true;
+        result.className = 'small muted';
+        result.textContent = 'Saving…';
+        try {
+          const body = { on: on.input.checked, autoApply: auto.input.checked, fallback: fb.input.checked, effort: effort.value, perHour: Number(perHour.value) };
+          if (model.value) body.model = model.value;
+          draw(await api('PUT', '/api/admin/ai', body));
+          toast('Settings saved');
+        } catch (e) {
+          result.className = 'small error';
+          result.textContent = e.message;
+          save.disabled = false;
+        }
+      });
+      const test = h('button', { class: 'btn', type: 'button', disabled: !st.enabled || undefined }, 'Test connection');
+      test.addEventListener('click', async () => {
+        test.disabled = true;
+        result.className = 'small muted';
+        result.textContent = 'Asking Claude…';
+        try {
+          const r = await api('POST', '/api/admin/ai/test');
+          result.className = 'small';
+          result.textContent = 'Working. Claude (' + r.model + ') answered and proposed ' + r.proposed + ' change.';
+        } catch (e) {
+          result.className = 'small error';
+          result.textContent = e.message;
+        } finally { test.disabled = false; }
+      });
+
+      const status = st.hasKey
+        ? h('p', {}, h('span', { class: 'badge ' + (st.enabled ? 'admin' : 'off') }, st.enabled ? 'On' : 'Off'), ' Key ', h('code', {}, st.keyHint), st.source === 'env' ? ' (set in the server environment; saving a key here overrides it)' : ' (saved, encrypted on the server)')
+        : h('p', {}, h('span', { class: 'badge off' }, 'No key'), ' Claude is off until you add an Anthropic API key.');
+
+      card.replaceChildren(h('div', { class: 'stack' },
+        status,
+        h('div', { class: 'field' }, h('span', {}, 'Anthropic API key'),
+          h('div', { class: 'keybox' }, keyInput, saveKey, removeKey),
+          h('small', { class: 'muted' }, 'The key is stored encrypted on your server and is never sent to anyone’s browser. Create one at console.anthropic.com (Settings, API keys) and set a spend limit there.')),
+        h('div', { class: 'form-grid' }, field('Model', model), field('Thinking effort', effort), field('Requests per person per hour', perHour)),
+        on.el, auto.el, fb.el,
+        h('div', { class: 'row', style: { flexWrap: 'wrap' } }, save, test),
+        result,
+        h('p', { class: 'small muted' }, 'Privacy: when someone asks Claude, the map’s title and idea text are sent to Anthropic. Nothing is sent otherwise.')));
+    }
     load();
   }
 

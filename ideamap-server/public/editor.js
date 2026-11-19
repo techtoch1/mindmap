@@ -33,6 +33,9 @@
     let pinch = null;
     const pointers = new Map();
     let lastTap = { id: null, t: 0 };
+    let lp = null; // long-press timer (touch)
+    const flashIds = new Set();
+    let search = { open: false, q: '', ids: [], i: -1 };
     let firstFit = true;
     let lastCursorSent = 0;
     let reconnectTimer = null;
@@ -59,9 +62,17 @@
       h('button', { class: 'btn ghost icon sm', type: 'button', title: 'Zoom out', 'aria-label': 'Zoom out', onclick: () => zoomBy(1 / 1.25) }, icon('minus')),
       zoomLabel,
       h('button', { class: 'btn ghost icon sm', type: 'button', title: 'Zoom in', 'aria-label': 'Zoom in', onclick: () => zoomBy(1.25) }, icon('plus')),
-      h('button', { class: 'btn ghost icon sm', type: 'button', title: 'Fit map to screen', 'aria-label': 'Fit map to screen', onclick: () => fit() }, icon('fit')));
+      h('button', { class: 'btn ghost icon sm', type: 'button', title: 'Fit map to screen', 'aria-label': 'Fit map to screen', onclick: () => fit() }, icon('fit')),
+      h('button', { class: 'btn ghost icon sm', type: 'button', title: 'Keyboard shortcuts (?)', 'aria-label': 'Keyboard shortcuts', onclick: () => showShortcuts() }, icon('help')));
     const hint = h('div', { class: 'hint' });
-    const canvas = h('div', { class: 'canvas', tabindex: '0', role: 'application', 'aria-label': 'Mind map canvas. Use Tab to add an idea, Enter to add a sibling, F2 to edit, Delete to remove.' }, world, zoombar, hint);
+    const searchInput = h('input', { type: 'search', placeholder: 'Find an idea…', 'aria-label': 'Find an idea in this map', autocomplete: 'off' });
+    const searchCount = h('span', { class: 'cnt', 'aria-live': 'polite' }, '');
+    const searchBar = h('div', { class: 'mapsearch hidden', role: 'search' },
+      searchInput, searchCount,
+      h('button', { class: 'btn ghost icon sm', type: 'button', 'aria-label': 'Previous match', title: 'Previous (Shift+Enter)', onclick: () => gotoMatch(-1) }, '↑'),
+      h('button', { class: 'btn ghost icon sm', type: 'button', 'aria-label': 'Next match', title: 'Next (Enter)', onclick: () => gotoMatch(1) }, '↓'),
+      h('button', { class: 'btn ghost icon sm', type: 'button', 'aria-label': 'Close search', title: 'Close (Esc)', onclick: () => closeSearch() }, '✕'));
+    const canvas = h('div', { class: 'canvas', tabindex: '0', role: 'application', 'aria-label': 'Mind map canvas. Use Tab to add an idea, Enter to add a sibling, F2 to edit, Delete to remove. Right-click for more actions.' }, world, zoombar, hint, searchBar);
 
     const btn = (label, ic, onclick, extra) => h('button', Object.assign({ class: 'btn sm', type: 'button', onclick, title: label }, extra || {}), icon(ic), h('span', {}, label));
     const bAddChild = btn('Add idea', 'child', () => selected && addChild(selected), { title: 'Add a child idea (Tab)' });
@@ -75,18 +86,21 @@
     const bJson = btn('JSON', 'download', () => download(`/api/maps/${encodeURIComponent(mapId)}/export`, ''), { title: 'Download the map as a JSON file' });
     const swatches = h('div', { class: 'swatches', role: 'group', 'aria-label': 'Colour of selected idea' },
       D.COLORS.map((c) => h('button', { class: 'sw c-' + c, type: 'button', title: COLOR_NAMES[c], 'aria-label': COLOR_NAMES[c], 'aria-pressed': 'false', dataset: { color: c }, onclick: () => selected && setColor(selected, c) })));
-    const bAsk = btn('Ask Claude', 'tidy', () => ai.toggle(), { title: 'Brainstorm and customise this map with Claude' });
+    const bFind = btn('Find', 'search', () => openSearch(), { title: 'Find an idea in this map (Ctrl+F)' });
+    const bAsk = btn('Ask Claude', 'spark', () => ai.toggle(), { title: 'Brainstorm and customise this map with Claude' });
     const editTools = [bAsk, h('span', { class: 'sep' }), bAddChild, bAddSib, bDelete, h('span', { class: 'sep' }), swatches, h('span', { class: 'sep' }), bUndo, bRedo, bTidy, h('span', { class: 'sep' })];
-    const toolbar = h('div', { class: 'ed-tools', role: 'toolbar', 'aria-label': 'Map tools' }, editTools, bFold, h('span', { class: 'sep' }), bPng, bJson);
+    const toolbar = h('div', { class: 'ed-tools', role: 'toolbar', 'aria-label': 'Map tools' }, editTools, bFold, h('span', { class: 'sep' }), bFind, bPng, bJson);
 
     const bar = h('div', { class: 'ed-bar' },
       h('a', { class: 'btn ghost sm', href: '#/', title: 'Back to all maps' }, icon('back'), 'Maps'),
       titleHolder, h('span', { class: 'grow' }), peersBox, status);
     const ai = window.IdeaAiPanel.create({
-      mapId, api: ctx.api, enabled: !!(ctx.ai && ctx.ai.enabled), isAdmin: !!ctx.isAdmin,
+      mapId, api: ctx.api, enabled: !!(ctx.ai && ctx.ai.enabled), isAdmin: !!ctx.isAdmin, autoAllowed: !!(ctx.ai && ctx.ai.autoApply),
       getSelected: () => selected,
+      undo: () => send({ t: 'undo' }),
       apply: (op) => {
         if (!commit(op)) return false;
+        flash(addedIds(op));
         fit(); // new branches can land off-screen
         if (window.matchMedia && window.matchMedia('(max-width: 760px)').matches) ai.close(); // the panel covers the map on phones
         return true;
@@ -380,7 +394,13 @@
       ta.remove();
       const exists = !!(view && view.nodes[id]);
       if (exists) {
-        if (save && val !== orig) commit({ type: 'text', id, text: val });
+        if (save && val !== orig) {
+          // a left-side idea keeps its right edge when its wording gets wider or narrower (one undo step)
+          const dw = D.nodeSize(orig, false).w - D.nodeSize(val, false).w;
+          const t = { type: 'text', id, text: val };
+          if (dw !== 0 && id !== view.rootId && D.sideOf(view, id) < 0) commit({ type: 'batch', ops: [t, { type: 'move', id, dx: dw, dy: 0 }] });
+          else commit(t);
+        }
         if (fresh && (!save || val === '') && !view.nodes[id].children.length) commit({ type: 'delete', id });
       }
       renderAll();
@@ -443,9 +463,18 @@
       const w = b.x1 - b.x0;
       const hh = b.y1 - b.y0;
       const k = Math.max(0.15, Math.min(1.2, (r.width - 100) / w, (r.height - 100) / hh));
-      T.k = k;
-      T.tx = (r.width - w * k) / 2 - b.x0 * k;
-      T.ty = (r.height - hh * k) / 2 - b.y0 * k;
+      const minK = r.width < 600 ? 0.5 : 0.15; // on a phone, fitting everything would make ideas too small to read or tap
+      if (k < minK) {
+        const rn = view.nodes[view.rootId];
+        const rs = D.sizeOf(view, view.rootId);
+        T.k = minK;
+        T.tx = r.width / 2 - (rn.x + rs.w / 2) * minK;
+        T.ty = r.height / 2 - (rn.y + rs.h / 2) * minK;
+      } else {
+        T.k = k;
+        T.tx = (r.width - w * k) / 2 - b.x0 * k;
+        T.ty = (r.height - hh * k) / 2 - b.y0 * k;
+      }
       applyTransform();
     }
 
@@ -465,6 +494,8 @@
       const vis = visibleIds();
       const visSet = new Set(vis);
       const dragSet = drag && drag.moved ? new Set(D.subtreeIds(view, drag.id)) : null;
+      const matchSet = new Set(search.open ? search.ids : []);
+      const currentMatch = search.open && search.i >= 0 ? search.ids[search.i] : null;
       const peerSel = new Map();
       for (const p of peers.values()) for (const id of p.sel || []) {
         if (!peerSel.has(id)) peerSel.set(id, []);
@@ -493,7 +524,8 @@
         e.style.top = y + 'px';
         const peersHere = peerSel.get(id);
         e.className = 'node' + (isRoot ? ' root' : '') + (n.color !== 'default' ? ' n-' + n.color : '') + (id === selected ? ' selected' : '') +
-          (isEdit ? ' editing' : '') + (dragSet && dragSet.has(id) ? ' dragging' : '') + (drag && drag.target === id ? ' drop-target' : '') + (peersHere ? ' peer-sel' : '');
+          (isEdit ? ' editing' : '') + (dragSet && dragSet.has(id) ? ' dragging' : '') + (drag && drag.target === id ? ' drop-target' : '') + (peersHere ? ' peer-sel' : '') +
+          (flashIds.has(id) ? ' flash' : '') + (matchSet.has(id) ? (id === currentMatch ? ' match match-current' : ' match') : '');
         if (peersHere) e.style.setProperty('--peer', peersHere[0].color);
         else e.style.removeProperty('--peer');
         e.setAttribute('aria-label', (n.text || 'Empty idea') + (n.children.length ? `, ${n.children.length} sub-ideas` : ''));
@@ -682,7 +714,8 @@
     /* ---------- pointer handling ---------- */
     canvas.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      if (e.target.closest('textarea') || e.target.closest('.zoombar')) return;
+      if (e.target.closest('textarea') || e.target.closest('.zoombar') || e.target.closest('.mapsearch')) return;
+      if (window.IdeaMenu && window.IdeaMenu.isOpen()) window.IdeaMenu.close();
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       try { canvas.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
       if (pointers.size === 2) return startPinch();
@@ -698,6 +731,7 @@
       if (nodeEl) {
         const id = nodeEl.dataset.id;
         setSelected(id);
+        if (e.pointerType !== 'mouse') startLongPress(e, id);
         drag = canEdit() && connected ? { id, sx: e.clientX, sy: e.clientY, dx: 0, dy: 0, moved: false, target: null, pid: e.pointerId } : { id, sx: e.clientX, sy: e.clientY, dx: 0, dy: 0, moved: false, target: null, pid: e.pointerId, readOnly: true };
       } else {
         pan = { x: e.clientX, y: e.clientY, tx: T.tx, ty: T.ty, moved: false };
@@ -733,6 +767,7 @@
 
     canvas.addEventListener('pointermove', (e) => {
       if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 8) clearLongPress();
       if (pinch) {
         if (pointers.size >= 2) movePinch();
         return;
@@ -775,6 +810,7 @@
     });
 
     function endPointer(e, cancelled) {
+      clearLongPress();
       pointers.delete(e.pointerId);
       if (pinch) {
         if (pointers.size < 2) pinch = null;
@@ -794,7 +830,7 @@
           const n = view.nodes[d.id];
           if (n) {
             if (d.target && view.nodes[d.target]) {
-              const pos = D.suggestChildPos(view, d.target);
+              const pos = D.suggestChildPos(view, d.target, undefined, n.text);
               if (folded.delete(d.target)) saveFolds();
               commit({ type: 'batch', ops: [
                 { type: 'reparent', id: d.id, parent: d.target },
@@ -858,6 +894,7 @@
 
     function onKey(e) {
       if (closed || !view) return;
+      if (window.IdeaMenu && window.IdeaMenu.isOpen()) return;
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       if (document.querySelector('.overlay')) return;
@@ -866,6 +903,11 @@
       if (mod && (key === 'z' || key === 'Z')) {
         e.preventDefault();
         if (canEdit()) send({ t: e.shiftKey ? 'redo' : 'undo' });
+        return;
+      }
+      if (mod && (key === 'f' || key === 'F')) {
+        e.preventDefault();
+        openSearch();
         return;
       }
       if (mod && (key === 'y' || key === 'Y')) {
@@ -895,11 +937,283 @@
         if (!sel) return setSelected(view.rootId);
         const next = neighbor(key.slice(5).toLowerCase());
         if (next) setSelected(next);
+      } else if (key === '?') showShortcuts();
+      else if (key === '/') {
+        e.preventDefault();
+        openSearch();
       } else if (key === '+' || key === '=') zoomBy(1.25);
       else if (key === '-') zoomBy(1 / 1.25);
       else if (key === '0') fit();
     }
     document.addEventListener('keydown', onKey);
+
+    /* ---------- flash, search, outline copy/paste, duplicate ---------- */
+    const short = (t, n = 30) => {
+      const x = String(t || '').replace(/\s+/g, ' ').trim();
+      return x.length > n ? x.slice(0, n - 1) + '…' : x || 'New idea';
+    };
+    const isTyping = (t) => !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+    const addedIds = (op) => (op && op.type === 'batch' ? op.ops : [op]).filter((o) => o && o.type === 'add').map((o) => o.id);
+
+    function flash(ids) {
+      if (!ids.length) return;
+      for (const id of ids) flashIds.add(id);
+      renderAll();
+      setTimeout(() => {
+        for (const id of ids) flashIds.delete(id);
+        if (!closed) renderAll();
+      }, 2300);
+    }
+
+    function centerOn(id) {
+      const n = view.nodes[id];
+      if (!n) return;
+      const r = canvas.getBoundingClientRect();
+      const s = D.sizeOf(view, id);
+      T.k = Math.max(0.6, Math.min(1.4, T.k));
+      T.tx = r.width / 2 - (n.x + s.w / 2) * T.k;
+      T.ty = r.height / 2 - (n.y + s.h / 2) * T.k;
+      applyTransform();
+    }
+
+    function runSearch(jump) {
+      search.q = searchInput.value;
+      search.ids = D.search(view, search.q);
+      search.i = search.ids.length ? 0 : -1;
+      searchCount.textContent = !search.q.trim() ? '' : search.ids.length ? `1 of ${search.ids.length}` : 'No matches';
+      if (jump && search.i >= 0) showMatch();
+      else renderAll();
+    }
+
+    function showMatch() {
+      const id = search.ids[search.i];
+      // unfold anything hiding the match, only for me
+      let p = view.nodes[id] && view.nodes[id].parent;
+      let changed = false;
+      while (p) {
+        if (folded.delete(p)) changed = true;
+        p = view.nodes[p].parent;
+      }
+      if (changed) saveFolds();
+      searchCount.textContent = `${search.i + 1} of ${search.ids.length}`;
+      setSelected(id);
+      renderAll();
+      centerOn(id);
+    }
+
+    function gotoMatch(delta) {
+      if (!search.ids.length) return;
+      search.i = (search.i + delta + search.ids.length) % search.ids.length;
+      showMatch();
+    }
+
+    function openSearch() {
+      search.open = true;
+      searchBar.classList.remove('hidden');
+      searchInput.focus();
+      searchInput.select();
+      runSearch(false);
+    }
+
+    function closeSearch() {
+      search = { open: false, q: '', ids: [], i: -1 };
+      searchBar.classList.add('hidden');
+      searchInput.value = '';
+      renderAll();
+      canvas.focus({ preventScroll: true });
+    }
+
+    searchInput.addEventListener('input', () => runSearch(true));
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        gotoMatch(e.shiftKey ? -1 : 1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeSearch();
+      }
+      e.stopPropagation();
+    });
+
+    function copyOutline(id) {
+      const text = D.toOutline(view, id);
+      const n = D.subtreeIds(view, id).length;
+      const done = () => toast(n === 1 ? 'Copied the idea as text.' : `Copied ${n} ideas as an outline.`);
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, () => toast('Your browser blocked copying. Select the idea and press Ctrl+C.', { error: true }));
+      else toast('Your browser blocked copying. Select the idea and press Ctrl+C.', { error: true });
+    }
+
+    function pasteText(text, parentId) {
+      if (!canEdit()) return toast('You have view-only access to this map.');
+      const r = D.opsFromOutline(view, parentId, text);
+      if (r.error) return toast(r.error, { error: true });
+      if (!commit(r.op)) return;
+      if (folded.delete(parentId)) saveFolds();
+      flash(addedIds(r.op));
+      toast(`Pasted ${r.count} idea${r.count === 1 ? '' : 's'}.` + (r.truncated ? ' Only the first 240 lines were used.' : '') + ' Ctrl+Z undoes it.');
+    }
+
+    function pasteFromClipboard(parentId) {
+      if (!navigator.clipboard || !navigator.clipboard.readText) return toast('Select the idea and press Ctrl+V to paste.');
+      navigator.clipboard.readText().then((t) => pasteText(t, parentId), () => toast('Your browser blocked clipboard access. Select the idea and press Ctrl+V instead.', { error: true }));
+    }
+
+    function duplicate(id) {
+      const r = D.duplicateBranch(view, id);
+      if (r.error) return toast(r.error, { error: true });
+      if (!commit(r.op)) return;
+      setSelected(r.newRoot);
+      flash(addedIds(r.op));
+      toast(`Duplicated ${r.count} idea${r.count === 1 ? '' : 's'}.`);
+    }
+
+    function foldAll(on) {
+      if (on) for (const id of Object.keys(view.nodes)) { if (id !== view.rootId && view.nodes[id].children.length) folded.add(id); }
+      else folded.clear();
+      saveFolds();
+      renderAll();
+      fit();
+    }
+
+    const interactive = () => !closed && view && document.activeElement && (document.activeElement === canvas || document.activeElement === document.body) && !document.querySelector('.overlay');
+    function onCopy(e) {
+      if (!interactive() || !selected || isTyping(e.target) || String(window.getSelection && window.getSelection()).trim()) return;
+      e.clipboardData.setData('text/plain', D.toOutline(view, selected));
+      e.preventDefault();
+      const n = D.subtreeIds(view, selected).length;
+      toast(n === 1 ? 'Copied the idea as text.' : `Copied ${n} ideas as an outline.`);
+    }
+    function onPaste(e) {
+      if (!interactive() || isTyping(e.target) || !canEdit()) return;
+      const text = e.clipboardData && e.clipboardData.getData('text/plain');
+      if (!text || !text.trim()) return;
+      e.preventDefault();
+      pasteText(text, selected || view.rootId);
+    }
+    document.addEventListener('copy', onCopy);
+    document.addEventListener('paste', onPaste);
+
+    function showShortcuts() {
+      const row = (k, d) => h('tr', {}, h('td', {}, k), h('td', {}, d));
+      const group = (t) => h('tr', {}, h('td', { colspan: '2' }, h('h3', {}, t)));
+      modal({
+        title: 'Keyboard shortcuts',
+        content: h('table', { class: 'keys' }, h('tbody', {},
+          group('Ideas'),
+          row(h('kbd', {}, 'Tab'), 'Add a child idea'), row(h('kbd', {}, 'Enter'), 'Add a sibling idea'), row(h('kbd', {}, 'F2'), 'Edit the selected idea (or double-click)'),
+          row(h('kbd', {}, 'Delete'), 'Delete the idea and its branch'), row(h('kbd', {}, 'Ctrl+Z'), 'Undo your last change (Ctrl+Shift+Z to redo)'),
+          row(h('kbd', {}, 'Ctrl+C'), 'Copy the branch as an outline'), row(h('kbd', {}, 'Ctrl+V'), 'Paste an outline as ideas under the selected idea'),
+          group('Moving around'),
+          row(h('kbd', {}, 'Arrow keys'), 'Select the neighbouring idea'), row(h('kbd', {}, 'Ctrl+F'), 'Find an idea (or press /)'),
+          row(h('kbd', {}, '+  −  0'), 'Zoom in, out, fit to screen'), row('Scroll', 'Pan; hold Ctrl and scroll to zoom'),
+          group('Mouse and touch'),
+          row('Right-click', 'Menu for an idea or the empty board (long-press on a phone)'), row('Drag an idea', 'Move it; drop it on another idea to re-parent it'),
+          row('Pinch', 'Zoom on a touch screen'))),
+        buttons: [{ label: 'Close', primary: true }],
+      });
+    }
+
+    /* ---------- right-click / long-press menu ---------- */
+    const PROMPTS = {
+      brainstorm: 'Brainstorm six specific sub-ideas under the selected idea.',
+      reword: 'Rewrite the selected idea, and any ideas beneath it, so the wording is clearer and more concrete. Keep the meaning.',
+      expand: 'Turn the selected idea into a short plan: add the key steps or sub-topics as sub-ideas beneath it.',
+    };
+
+    function nodeMenu(id) {
+      const n = view.nodes[id];
+      const isRoot = !n.parent;
+      const edit = canEdit() && connected;
+      const items = [{ heading: short(n.text) }];
+      if (canEdit()) {
+        items.push(
+          { label: 'Edit text', hint: 'F2', icon: 'edit', disabled: !edit, onClick: () => startEdit(id, false) },
+          { label: 'Add child idea', hint: 'Tab', icon: 'child', disabled: !edit, onClick: () => addChild(id) },
+          { label: 'Add sibling', hint: 'Enter', icon: 'sibling', disabled: !edit || isRoot, onClick: () => addSibling(id) },
+          { label: 'Duplicate branch', icon: 'copy', disabled: !edit || isRoot, onClick: () => duplicate(id) },
+          { separator: true },
+          { colors: { current: n.color, onPick: (c) => setColor(id, c) } },
+          { separator: true });
+      }
+      items.push({ label: 'Copy as outline', hint: 'Ctrl+C', icon: 'copy', onClick: () => copyOutline(id) });
+      if (canEdit()) items.push({ label: 'Paste ideas here', hint: 'Ctrl+V', icon: 'paste', disabled: !edit, onClick: () => pasteFromClipboard(id) });
+      if (n.children.length && !isRoot) items.push({ label: folded.has(id) ? 'Unfold branch' : 'Fold branch', icon: 'fold', onClick: () => toggleFold(id) });
+      if (canEdit() && ai.enabled) {
+        items.push({ separator: true }, { heading: 'Claude' },
+          { label: 'Brainstorm sub-ideas', icon: 'spark', disabled: !edit, onClick: () => ai.ask(PROMPTS.brainstorm) },
+          { label: 'Expand into a plan', icon: 'spark', disabled: !edit, onClick: () => ai.ask(PROMPTS.expand) },
+          { label: 'Reword this idea', icon: 'spark', disabled: !edit, onClick: () => ai.ask(PROMPTS.reword) },
+          { label: 'Ask Claude…', icon: 'spark', onClick: () => ai.open() });
+      }
+      if (canEdit()) items.push({ separator: true }, { label: 'Delete', hint: 'Del', icon: 'trash', danger: true, disabled: !edit || isRoot, onClick: () => del(id) });
+      return items;
+    }
+
+    function canvasMenu() {
+      const edit = canEdit() && connected;
+      const items = [{ heading: 'Board' }];
+      if (canEdit()) {
+        items.push(
+          { label: 'Add idea to the central idea', icon: 'child', disabled: !edit, onClick: () => addChild(view.rootId) },
+          { label: 'Paste ideas', hint: 'Ctrl+V', icon: 'paste', disabled: !edit, onClick: () => pasteFromClipboard(selected || view.rootId) },
+          { label: 'Tidy layout', icon: 'tidy', disabled: !edit, onClick: () => tidy() },
+          { separator: true });
+      }
+      items.push(
+        { label: 'Fit to screen', hint: '0', icon: 'fit', onClick: () => fit() },
+        { label: 'Find an idea…', hint: 'Ctrl+F', icon: 'search', onClick: () => openSearch() },
+        { label: 'Fold all branches', icon: 'fold', onClick: () => foldAll(true) },
+        { label: 'Unfold all branches', icon: 'expand', onClick: () => foldAll(false) });
+      if (canEdit() && ai.enabled) items.push({ separator: true }, { label: 'Ask Claude…', icon: 'spark', onClick: () => ai.open() });
+      items.push({ separator: true },
+        { label: 'Download as image (PNG)', icon: 'image', onClick: () => exportPng() },
+        { label: 'Download as JSON', icon: 'download', onClick: () => download(`/api/maps/${encodeURIComponent(mapId)}/export`, '') },
+        { label: 'Keyboard shortcuts', hint: '?', icon: 'help', onClick: () => showShortcuts() });
+      return items;
+    }
+
+    function showMenu(id, x, y, touch) {
+      if (!view) return;
+      window.IdeaMenu.open({ touch, x, y, items: id && view.nodes[id] ? nodeMenu(id) : canvasMenu(), label: id ? 'Idea actions' : 'Board actions' });
+    }
+
+    canvas.addEventListener('contextmenu', (e) => {
+      if (e.target.closest('.zoombar') || e.target.closest('.mapsearch') || e.target.closest('textarea')) return;
+      e.preventDefault();
+      if (!view) return;
+      clearLongPress();
+      if (editing) finishEdit(true);
+      const nodeEl = e.target.closest('.node');
+      let id = nodeEl ? nodeEl.dataset.id : null;
+      let x = e.clientX;
+      let y = e.clientY;
+      // Menu key or Shift+F10 on the focused canvas: open the menu on the selected idea
+      if (!id && (e.button === 0 || (x === 0 && y === 0)) && selected && nodeEls.get(selected)) {
+        const r = nodeEls.get(selected).getBoundingClientRect();
+        id = selected;
+        x = r.left + r.width / 2;
+        y = r.bottom;
+      }
+      if (id) setSelected(id);
+      showMenu(id, x, y);
+    });
+
+    function startLongPress(e, id) {
+      clearLongPress();
+      lp = { id, x: e.clientX, y: e.clientY, timer: setTimeout(() => {
+        if (!lp) return;
+        const { id: lid, x, y } = lp;
+        lp = null;
+        drag = null;
+        showMenu(lid, x, y, true);
+      }, 550) };
+    }
+    function clearLongPress() {
+      if (lp) {
+        clearTimeout(lp.timer);
+        lp = null;
+      }
+    }
 
     /* ---------- PNG export ---------- */
     function roundRect(c, x, y, w, hh, r) {
@@ -1040,6 +1354,10 @@
         closed = true;
         clearTimeout(reconnectTimer);
         document.removeEventListener('keydown', onKey);
+        document.removeEventListener('copy', onCopy);
+        document.removeEventListener('paste', onPaste);
+        clearLongPress();
+        if (window.IdeaMenu) window.IdeaMenu.close();
         if (ws) ws.close();
         container.replaceChildren();
       },

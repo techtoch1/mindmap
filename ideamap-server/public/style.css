@@ -128,7 +128,7 @@ input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: 0
   display: flex; align-items: center; gap: 14px; padding: 10px 20px; background: var(--surface);
   border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20;
 }
-.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text); text-decoration: none; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--text); text-decoration: none; white-space: nowrap; }
 .brand svg { width: 28px; height: 28px; }
 .brand small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 2px; }
 .avatar {
@@ -302,4 +302,55 @@ kbd { font: 600 11px "IBM Plex Sans", sans-serif; background: var(--surface-2); 
 .ai-off strong { color: var(--text); }
 @media (max-width: 760px) {
   .ai-panel { position: absolute; left: 0; right: 0; bottom: 0; width: auto; max-width: none; height: 62%; z-index: 30; border-left: 0; border-top: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); }
+}
+
+/* ---------- context menu ---------- */
+.ctx-menu { position: fixed; z-index: 90; min-width: 230px; max-width: 300px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 6px; max-height: calc(100vh - 16px); overflow-y: auto; }
+.ctx-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border: 0; background: none; border-radius: 8px; text-align: left; cursor: pointer; font-size: 14px; color: var(--text); }
+.ctx-item:hover, .ctx-item:focus-visible { background: var(--surface-2); outline: none; }
+.ctx-item:focus-visible { box-shadow: inset 0 0 0 2px var(--primary); }
+.ctx-item:disabled { opacity: .4; cursor: not-allowed; }
+.ctx-item.danger { color: var(--danger); }
+.ctx-item.danger:hover { background: var(--danger-soft); }
+.ctx-item svg, .ctx-icon { width: 16px; height: 16px; flex: none; }
+.ctx-label { flex: 1; }
+.ctx-item kbd { margin-left: auto; }
+.ctx-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+.ctx-head { padding: 6px 10px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-colors { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 10px; }
+.ctx-colors .sw:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* ---------- search in map, flash, shortcuts ---------- */
+.mapsearch { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 12; display: flex; align-items: center; gap: 6px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; padding: 5px 6px 5px 12px; box-shadow: var(--shadow-lg); }
+.mapsearch input { border: 0; outline: 0; background: transparent; min-height: 30px; width: min(240px, 46vw); padding: 0; }
+.mapsearch .cnt { font-size: 12px; color: var(--muted); min-width: 52px; text-align: right; }
+.node.match { outline: 3px solid var(--warn); outline-offset: 1px; }
+.node.match-current { outline: 4px solid var(--primary); outline-offset: 2px; }
+.node.flash { animation: flash 2.2s ease-out 1; }
+@keyframes flash { 0% { box-shadow: 0 0 0 0 var(--primary), var(--shadow); transform: scale(1.04); } 25% { box-shadow: 0 0 0 8px rgba(24, 123, 205, .35), var(--shadow); } 100% { box-shadow: 0 0 0 0 rgba(24, 123, 205, 0), var(--shadow); transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .node.flash { animation: none; outline: 3px solid var(--primary); } }
+.keys { width: 100%; border-collapse: collapse; font-size: 14px; }
+.keys td { padding: 5px 0; vertical-align: top; }
+.keys td:first-child { width: 42%; white-space: nowrap; padding-right: 12px; }
+.keys h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding-top: 10px; }
+
+/* ---------- Claude auto-apply bits ---------- */
+.ai-toggle { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 0 12px 8px; color: var(--muted); }
+.ai-toggle input { margin-top: 3px; }
+.ai-card.applied { border-color: var(--ok); }
+.ai-note { font-size: 12px; color: var(--warn); }
+
+/* ---------- settings page ---------- */
+.form-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.check { display: flex; gap: 10px; align-items: flex-start; }
+.check input { margin-top: 4px; width: 18px; height: 18px; }
+.check small { display: block; color: var(--muted); }
+.keybox { display: flex; gap: 8px; flex-wrap: wrap; }
+.keybox input { flex: 1 1 260px; font-family: ui-monospace, Menlo, monospace; }
+
+@media (max-width: 760px) {
+  .topbar { gap: 6px; }
+  .topbar .lbl, .brand small { display: none; }
+  .topbar .btn.ghost { padding: 0 8px; }
+  html, body { overflow-x: hidden; }
 }
