@@ -24,6 +24,14 @@ A multi-user, real-time mind-mapping app for marketing ideas, by Aligned.
 - **Find** an idea in the map (Ctrl+F), fold or unfold every branch, and press `?` for the shortcut sheet.
 - Keyboard: `Tab` add idea, `Enter` add sibling, `F2` edit, `Del` delete, arrows to move around, `+`/`-`/`0` zoom and fit. Pinch-zoom on touch screens.
 
+**Team chat**
+- A **Team** channel for everyone, and a **This map** discussion inside each map. Open it from the **Chat** button in a map, or the floating **Chat** button on the maps, People and Settings pages.
+- Messages arrive live and are saved, so the history is there when you come back (the latest 50, with "Load earlier messages").
+- See who is online, who is typing, and unread badges on the Chat button and on each room. A new person starts with the old history already read.
+- Everyone signed in can chat, viewers included. You can delete your own messages and admins can delete anyone's.
+- `@Ed` highlights a mention, and a message that mentions you stands out. Web links become safe links. Everything else is shown as plain text, never as HTML.
+- Limits: 2,000 characters per message, 12 messages per 20 seconds per person. Deleting a map deletes its discussion.
+
 **Claude assistant (optional)**
 - **Ask Claude** opens a side panel in the editor. Ask it to add ideas, rename, recolour, move, delete or tidy, or just ask for advice.
 - **Claude takes actions on the board.** It can add, rename, recolour, move, delete and tidy. In **auto mode** (the default) its changes are applied straight away as one undo step, the new ideas flash, and the chat card has an **Undo** button. Anything that **deletes** ideas always waits for a click.
@@ -123,11 +131,12 @@ src/realtime.js      WebSocket hub: rooms, ops, undo/redo, presence
 src/db.js            SQLite schema
 src/security.js      scrypt, tokens, login throttle
 src/ai.js            Claude assistant: prompt, proposal checking, limits
+src/chat.js          team chat: rooms, history, unread, live push
 src/settings.js      encrypted admin settings (API key)
 src/templates.js     starter maps
 public/doc.js        document engine shared by server and browser
 public/editor.js     canvas editor     public/app.js  screens and routing
-public/ai-panel.js   Ask Claude panel     public/context-menu.js  right-click menu
+public/ai-panel.js   Ask Claude panel     public/chat.js  team chat panel     public/context-menu.js  right-click menu
 test/                node:test suites (npm test)
 ```
 
@@ -136,6 +145,7 @@ test/                node:test suites (npm test)
 - No password reset yet. An admin can remove the account and send a new invite.
 - Email is not sent by the app. Invite links are copied and shared by the admin.
 - Fonts are Latin only.
+- Chat has no file attachments, editing of sent messages, or email notifications yet. Chat is for people on the same server: messages are not end-to-end encrypted, and admins can read the database.
 - Claude answers appear all at once after a few seconds (no word-by-word streaming yet).
 
 ## Fonts

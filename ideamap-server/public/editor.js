@@ -89,13 +89,17 @@
     const bFind = btn('Find', 'search', () => openSearch(), { title: 'Find an idea in this map (Ctrl+F)' });
     const bAsk = btn('Ask Claude', 'spark', () => ai.toggle(), { title: 'Brainstorm and customise this map with Claude' });
     const editTools = [bAsk, h('span', { class: 'sep' }), bAddChild, bAddSib, bDelete, h('span', { class: 'sep' }), swatches, h('span', { class: 'sep' }), bUndo, bRedo, bTidy, h('span', { class: 'sep' })];
-    const toolbar = h('div', { class: 'ed-tools', role: 'toolbar', 'aria-label': 'Map tools' }, editTools, bFold, h('span', { class: 'sep' }), bFind, bPng, bJson);
+    const chatBadge = h('span', { class: 'badge-count hidden' });
+    const bChat = btn('Chat', 'chat', () => chat.toggle(), { title: 'Team chat and a discussion for this map' });
+    bChat.appendChild(chatBadge);
+    const toolbar = h('div', { class: 'ed-tools', role: 'toolbar', 'aria-label': 'Map tools' }, editTools, bFold, h('span', { class: 'sep' }), bChat, bFind, bPng, bJson);
 
     const bar = h('div', { class: 'ed-bar' },
       h('a', { class: 'btn ghost sm', href: '#/', title: 'Back to all maps' }, icon('back'), 'Maps'),
       titleHolder, h('span', { class: 'grow' }), peersBox, status);
     const ai = window.IdeaAiPanel.create({
       mapId, api: ctx.api, enabled: !!(ctx.ai && ctx.ai.enabled), isAdmin: !!ctx.isAdmin, autoAllowed: !!(ctx.ai && ctx.ai.autoApply),
+      onOpen: () => chat.close(),
       getSelected: () => selected,
       undo: () => send({ t: 'undo' }),
       apply: (op) => {
@@ -106,7 +110,17 @@
         return true;
       },
     });
-    const root = h('div', { class: 'ed', id: 'main' }, bar, toolbar, h('div', { class: 'ed-body' }, canvas, ai.el));
+    const chat = window.IdeaChat.create({
+      user: ctx.user, api: ctx.api,
+      rooms: [{ id: 'map-' + mapId, label: 'This map' }, { id: 'team', label: 'Team' }],
+      onOpen: () => ai.close(),
+    });
+    chat.onUnread((n) => {
+      chatBadge.textContent = n > 99 ? '99+' : String(n);
+      chatBadge.classList.toggle('hidden', !n);
+      bChat.setAttribute('aria-label', n ? `Chat, ${n} unread` : 'Chat');
+    });
+    const root = h('div', { class: 'ed', id: 'main' }, bar, toolbar, h('div', { class: 'ed-body' }, canvas, ai.el, chat.el));
     container.replaceChildren(root);
 
     /* ---------- networking ---------- */
@@ -1358,6 +1372,7 @@
         document.removeEventListener('paste', onPaste);
         clearLongPress();
         if (window.IdeaMenu) window.IdeaMenu.close();
+        chat.destroy();
         if (ws) ws.close();
         container.replaceChildren();
       },

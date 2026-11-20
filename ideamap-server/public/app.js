@@ -4,6 +4,7 @@
   const root = document.getElementById('app');
   const state = { user: null, csrf: null, needsSetup: false, setupTokenRequired: false, ai: { enabled: false } };
   let editor = null;
+  let chatWidget = null;
 
   /* ---------- API ---------- */
   async function api(method, url, body) {
@@ -45,6 +46,10 @@
 
   /* ---------- routing ---------- */
   function route() {
+    if (chatWidget) {
+      chatWidget.destroy();
+      chatWidget = null;
+    }
     if (editor) {
       editor.destroy();
       editor = null;
@@ -145,6 +150,12 @@
       u.role === 'admin' ? h('a', { class: 'btn ghost', href: '#/admin', title: 'People', 'aria-label': 'People' }, icon('users'), h('span', { class: 'lbl' }, 'People')) : null,
       u.role === 'admin' ? h('a', { class: 'btn ghost', href: '#/settings', title: 'Settings', 'aria-label': 'Settings' }, icon('settings'), h('span', { class: 'lbl' }, 'Settings')) : null,
       wrap);
+  }
+
+  // Floating team chat on the library, People and Settings pages
+  function mountChat() {
+    chatWidget = window.IdeaChat.create({ user: state.user, api, rooms: [{ id: 'team', label: 'Team' }], floating: true });
+    root.append(chatWidget.fab, chatWidget.el);
   }
 
   function changePassword() {
@@ -397,13 +408,14 @@
         fileInput),
       list,
       h('p', { class: 'footer' }, canEdit ? 'Everyone signed in can see every map. Editors and admins can change them.' : 'You have view-only access. Ask an admin if you need to edit.')));
+    mountChat();
     load();
   }
 
   /* ---------- editor ---------- */
   function viewMap(id) {
     root.replaceChildren();
-    editor = window.IdeaEditor.open(root, id, { api, navigate, onSignedOut: signedOut, ai: state.ai, isAdmin: state.user.role === 'admin' });
+    editor = window.IdeaEditor.open(root, id, { api, navigate, onSignedOut: signedOut, user: state.user, ai: state.ai, isAdmin: state.user.role === 'admin' });
   }
 
   /* ---------- admin ---------- */
@@ -503,6 +515,7 @@
           h('button', { class: 'btn primary', type: 'button', onclick: createInvite }, icon('plus'), 'Create invite link')))),
       h('section', { class: 'section' }, h('h2', {}, 'Team'), usersBox),
       h('section', { class: 'section' }, h('h2', {}, 'Invites'), invitesBox)));
+    mountChat();
     load();
   }
 
@@ -512,6 +525,7 @@
     root.replaceChildren(topbar(), h('main', { class: 'page', id: 'main' },
       h('div', { class: 'page-head' }, h('a', { class: 'btn ghost sm', href: '#/' }, icon('back'), 'Maps'), h('h1', {}, 'Settings')),
       h('section', { class: 'section', style: { marginTop: '0' } }, h('h2', {}, 'Claude assistant'), card)));
+    mountChat();
 
     function check(label, help, checked) {
       const input = h('input', { type: 'checkbox' });

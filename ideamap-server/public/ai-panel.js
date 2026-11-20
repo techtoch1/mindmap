@@ -24,7 +24,7 @@
     try { localStorage.setItem(AUTO_KEY, on ? '1' : '0'); } catch { /* private mode */ }
   }
 
-  function create({ mapId, api, enabled, isAdmin, autoAllowed, getSelected, apply, undo }) {
+  function create({ mapId, api, enabled, isAdmin, autoAllowed, getSelected, apply, undo, onOpen }) {
     const history = []; // { role, content } for earlier turns
     let busy = false;
     let openCard = null; // the one card with buttons that still work
@@ -182,6 +182,7 @@
       el: panel,
       enabled,
       open() {
+        if (onOpen) onOpen();
         panel.classList.remove('hidden');
         if (enabled) input.focus();
       },

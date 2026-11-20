@@ -7,6 +7,7 @@ const sec = require('./security');
 const { Hub } = require('./realtime');
 const { TEMPLATES } = require('./templates');
 const aiMod = require('./ai');
+const { Chat, ChatError } = require('./chat');
 const Doc = require('../public/doc.js');
 
 const ROLES = ['admin', 'editor', 'viewer'];
@@ -327,6 +328,7 @@ function createApp(config, deps = {}) {
     q.setPassword.run(sec.hashPassword(next), sess.user.id);
     q.deleteOtherSessions.run(sess.user.id, sess.hash);
     hub.kickUser(sess.user.id, 'Password changed');
+    chat.kickUser(sess.user.id, 'Password changed');
     return { ok: true };
   });
 
@@ -366,6 +368,7 @@ function createApp(config, deps = {}) {
       return id;
     });
     const id = tx();
+    chat.markRead(id, 'team', Number.MAX_SAFE_INTEGER); // a new person starts caught up, not 500 messages behind
     const csrf = createSession(res, id);
     return { user: q.userById.get(id), csrf };
   });
@@ -388,6 +391,7 @@ function createApp(config, deps = {}) {
     if (disabled) {
       q.deleteUserSessions.run(id);
       hub.kickUser(id, 'Account disabled');
+      chat.kickUser(id, 'Account disabled');
     }
     return { user: q.userById.get(id) };
   });
@@ -399,6 +403,7 @@ function createApp(config, deps = {}) {
     if (id === sess.user.id) throw new HttpError(400, 'You cannot delete yourself');
     if (target.role === 'admin' && !target.disabled && q.activeAdmins.get(id).n === 0) throw new HttpError(400, 'There must be at least one active admin');
     hub.kickUser(id, 'Account removed');
+    chat.kickUser(id, 'Account removed');
     q.deleteUser.run(id);
     return { ok: true };
   });
@@ -558,9 +563,37 @@ function createApp(config, deps = {}) {
     const m = loadMap(params.id);
     if (sess.user.role !== 'admin' && m.owner_id !== sess.user.id) throw new HttpError(403, 'Only the map owner or an admin can delete this map');
     hub.closeRoom(m.id);
+    chat.dropRoom('map-' + m.id);
     q.deleteMap.run(m.id);
     return { ok: true };
   });
+
+  // --- chat ---
+  const chatError = (e) => (e instanceof ChatError ? new HttpError(e.status, e.message) : e);
+  const chatCall = (fn) => {
+    try { return fn(); } catch (e) { throw chatError(e); }
+  };
+
+  route('GET', '/api/chat/members', 'user', () => ({ members: chat.members() }));
+
+  route('GET', '/api/chat/unread', 'user', ({ sess }) => ({ unread: chat.unread(sess.user.id) }));
+
+  route('GET', '/api/chat/rooms/:room/messages', 'user', ({ params, query }) => chatCall(() => {
+    const num = (k) => { const n = Number(query.get(k)); return Number.isInteger(n) && n > 0 ? n : undefined; };
+    return chat.list(params.room, { before: num('before'), after: num('after'), limit: num('limit') });
+  }));
+
+  route('POST', '/api/chat/rooms/:room/messages', 'user', ({ params, body, sess }) => chatCall(() => ({ message: chat.post(sess.user, params.room, body.text) })));
+
+  route('POST', '/api/chat/rooms/:room/read', 'user', ({ params, body, sess }) => chatCall(() => {
+    chat.markRead(sess.user.id, params.room, body.lastId);
+    return { ok: true };
+  }));
+
+  route('DELETE', '/api/chat/messages/:id', 'user', ({ params, sess }) => chatCall(() => {
+    chat.remove(sess.user, Number(params.id));
+    return { ok: true };
+  }));
 
   /* ---------- dispatcher ---------- */
 
@@ -665,7 +698,13 @@ function createApp(config, deps = {}) {
       checkOrigin: originAllowed,
     },
   });
-  server.on('upgrade', (req, socket, head) => hub.handleUpgrade(req, socket, head));
+  const chat = new Chat({ db, sessionFromCookie, originAllowed });
+  server.on('upgrade', (req, socket, head) => {
+    let pathname = '';
+    try { pathname = new URL(req.url, 'http://x').pathname; } catch { /* handled below */ }
+    if (pathname === '/ws/chat') chat.handleUpgrade(req, socket, head);
+    else hub.handleUpgrade(req, socket, head);
+  });
 
   const pruneTimer = setInterval(() => q.pruneSessions.run(Date.now()), 3600 * 1000);
   pruneTimer.unref();
@@ -673,6 +712,7 @@ function createApp(config, deps = {}) {
   function close() {
     clearInterval(pruneTimer);
     hub.close();
+    chat.close();
     return new Promise((resolve) => {
       server.close(() => {
         db.close();
