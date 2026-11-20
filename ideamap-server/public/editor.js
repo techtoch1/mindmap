@@ -1346,8 +1346,9 @@
       legendSig = sig;
       bKey.setAttribute('aria-pressed', legendOpen ? 'true' : 'false');
       if (!legendOpen) {
-        legendEl.className = 'legend collapsed';
-        legendEl.replaceChildren(h('button', { class: 'btn sm legend-tab', type: 'button', onclick: () => setLegendOpen(true) }, icon('palette'), 'Colour key'));
+        // hidden completely: the toolbar's Colour key button is what shows it again
+        legendEl.className = 'legend hidden';
+        legendEl.replaceChildren();
         return;
       }
       legendEl.className = 'legend';
