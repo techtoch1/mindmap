@@ -21,6 +21,7 @@ A multi-user, real-time mind-mapping app for marketing ideas, by Aligned.
 - Live cursors, live selections and avatars for everyone in the map. View-only people can watch and follow along.
 - **Right-click** an idea or the empty board for a menu (long-press on a phone). The map library has one too.
 - **Paste ideas fast:** copy a bullet list or outline from a doc or email and press Ctrl+V on the board to turn it into ideas. Ctrl+C copies a branch as an outline. Duplicate a branch from the menu.
+- **Colour key:** name what each colour means for a map (for example blue = "Channels", amber = "Needs a decision"). It is part of the map, so it is live for everyone, undoable, exported with the map and copied when you duplicate it. A small card on the board lists the colours in use with how many ideas use each, click a row to highlight just those ideas, and the meaning shows when you pick a colour. Editors name colours with **Edit** on the card. The PNG export includes the key, and Claude reads it, follows it, and can name colours when it groups ideas.
 - **Find** an idea in the map (Ctrl+F), fold or unfold every branch, and press `?` for the shortcut sheet.
 - Keyboard: `Tab` add idea, `Enter` add sibling, `F2` edit, `Del` delete, arrows to move around, `+`/`-`/`0` zoom and fit. Pinch-zoom on touch screens.
 

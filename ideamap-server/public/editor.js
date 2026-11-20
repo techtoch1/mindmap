@@ -34,6 +34,10 @@
     const pointers = new Map();
     let lastTap = { id: null, t: 0 };
     let lp = null; // long-press timer (touch)
+    let legendOpen = readLegendOpen();
+    let legendEdit = false;
+    let legendSig = '';
+    let focusColor = null; // highlight only the ideas with this colour (just for me)
     const flashIds = new Set();
     let search = { open: false, q: '', ids: [], i: -1 };
     let firstFit = true;
@@ -65,6 +69,7 @@
       h('button', { class: 'btn ghost icon sm', type: 'button', title: 'Fit map to screen', 'aria-label': 'Fit map to screen', onclick: () => fit() }, icon('fit')),
       h('button', { class: 'btn ghost icon sm', type: 'button', title: 'Keyboard shortcuts (?)', 'aria-label': 'Keyboard shortcuts', onclick: () => showShortcuts() }, icon('help')));
     const hint = h('div', { class: 'hint' });
+    const legendEl = h('div', { class: 'legend' });
     const searchInput = h('input', { type: 'search', placeholder: 'Find an idea…', 'aria-label': 'Find an idea in this map', autocomplete: 'off' });
     const searchCount = h('span', { class: 'cnt', 'aria-live': 'polite' }, '');
     const searchBar = h('div', { class: 'mapsearch hidden', role: 'search' },
@@ -72,7 +77,7 @@
       h('button', { class: 'btn ghost icon sm', type: 'button', 'aria-label': 'Previous match', title: 'Previous (Shift+Enter)', onclick: () => gotoMatch(-1) }, '↑'),
       h('button', { class: 'btn ghost icon sm', type: 'button', 'aria-label': 'Next match', title: 'Next (Enter)', onclick: () => gotoMatch(1) }, '↓'),
       h('button', { class: 'btn ghost icon sm', type: 'button', 'aria-label': 'Close search', title: 'Close (Esc)', onclick: () => closeSearch() }, '✕'));
-    const canvas = h('div', { class: 'canvas', tabindex: '0', role: 'application', 'aria-label': 'Mind map canvas. Use Tab to add an idea, Enter to add a sibling, F2 to edit, Delete to remove. Right-click for more actions.' }, world, zoombar, hint, searchBar);
+    const canvas = h('div', { class: 'canvas', tabindex: '0', role: 'application', 'aria-label': 'Mind map canvas. Use Tab to add an idea, Enter to add a sibling, F2 to edit, Delete to remove. Right-click for more actions.' }, world, legendEl, zoombar, hint, searchBar);
 
     const btn = (label, ic, onclick, extra) => h('button', Object.assign({ class: 'btn sm', type: 'button', onclick, title: label }, extra || {}), icon(ic), h('span', {}, label));
     const bAddChild = btn('Add idea', 'child', () => selected && addChild(selected), { title: 'Add a child idea (Tab)' });
@@ -89,10 +94,11 @@
     const bFind = btn('Find', 'search', () => openSearch(), { title: 'Find an idea in this map (Ctrl+F)' });
     const bAsk = btn('Ask Claude', 'spark', () => ai.toggle(), { title: 'Brainstorm and customise this map with Claude' });
     const editTools = [bAsk, h('span', { class: 'sep' }), bAddChild, bAddSib, bDelete, h('span', { class: 'sep' }), swatches, h('span', { class: 'sep' }), bUndo, bRedo, bTidy, h('span', { class: 'sep' })];
+    const bKey = btn('Colour key', 'palette', () => setLegendOpen(!legendOpen), { title: 'Show or hide the colour key: what each colour means' });
     const chatBadge = h('span', { class: 'badge-count hidden' });
     const bChat = btn('Chat', 'chat', () => chat.toggle(), { title: 'Team chat and a discussion for this map' });
     bChat.appendChild(chatBadge);
-    const toolbar = h('div', { class: 'ed-tools', role: 'toolbar', 'aria-label': 'Map tools' }, editTools, bFold, h('span', { class: 'sep' }), bChat, bFind, bPng, bJson);
+    const toolbar = h('div', { class: 'ed-tools', role: 'toolbar', 'aria-label': 'Map tools' }, editTools, bFold, h('span', { class: 'sep' }), bKey, bChat, bFind, bPng, bJson);
 
     const bar = h('div', { class: 'ed-bar' },
       h('a', { class: 'btn ghost sm', href: '#/', title: 'Back to all maps' }, icon('back'), 'Maps'),
@@ -539,7 +545,7 @@
         const peersHere = peerSel.get(id);
         e.className = 'node' + (isRoot ? ' root' : '') + (n.color !== 'default' ? ' n-' + n.color : '') + (id === selected ? ' selected' : '') +
           (isEdit ? ' editing' : '') + (dragSet && dragSet.has(id) ? ' dragging' : '') + (drag && drag.target === id ? ' drop-target' : '') + (peersHere ? ' peer-sel' : '') +
-          (flashIds.has(id) ? ' flash' : '') + (matchSet.has(id) ? (id === currentMatch ? ' match match-current' : ' match') : '');
+          (flashIds.has(id) ? ' flash' : '') + (focusColor && n.color !== focusColor ? ' dim' : '') + (matchSet.has(id) ? (id === currentMatch ? ' match match-current' : ' match') : '');
         if (peersHere) e.style.setProperty('--peer', peersHere[0].color);
         else e.style.removeProperty('--peer');
         e.setAttribute('aria-label', (n.text || 'Empty idea') + (n.children.length ? `, ${n.children.length} sub-ideas` : ''));
@@ -594,6 +600,7 @@
       if (editing) autosize(editing.ta);
       drawEdges(vis, dragSet);
       updateToolbar();
+      renderLegend();
     }
 
     function drawEdges(vis, dragSet) {
@@ -714,6 +721,9 @@
       bTidy.disabled = !edit || !connected;
       bFold.disabled = !n || !n.children.length || selected === (view && view.rootId);
       for (const s of swatches.children) {
+        const meaning = ((view && view.legend) || {})[s.dataset.color]; // the map may not have loaded yet
+        s.title = COLOR_NAMES[s.dataset.color] + (meaning ? ': ' + meaning : '');
+        s.setAttribute('aria-label', s.title);
         s.disabled = !edit || !n || !connected;
         s.setAttribute('aria-pressed', n && n.color === s.dataset.color ? 'true' : 'false');
       }
@@ -728,7 +738,7 @@
     /* ---------- pointer handling ---------- */
     canvas.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      if (e.target.closest('textarea') || e.target.closest('.zoombar') || e.target.closest('.mapsearch')) return;
+      if (e.target.closest('textarea') || e.target.closest('.zoombar') || e.target.closest('.mapsearch') || e.target.closest('.legend')) return;
       if (window.IdeaMenu && window.IdeaMenu.isOpen()) window.IdeaMenu.close();
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       try { canvas.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
@@ -869,6 +879,7 @@
     canvas.addEventListener('pointercancel', (e) => endPointer(e, true));
 
     canvas.addEventListener('wheel', (e) => {
+      if (e.target.closest('.legend') && !e.ctrlKey && !e.metaKey) return; // let a long colour key scroll
       e.preventDefault();
       const r = canvas.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top);
@@ -945,7 +956,8 @@
         e.preventDefault();
         del(sel);
       } else if (key === 'Escape') {
-        setSelected(null);
+        if (focusColor) setFocus(null);
+        else setSelected(null);
       } else if (key.startsWith('Arrow')) {
         e.preventDefault();
         if (!sel) return setSelected(view.rootId);
@@ -1146,7 +1158,7 @@
           { label: 'Add sibling', hint: 'Enter', icon: 'sibling', disabled: !edit || isRoot, onClick: () => addSibling(id) },
           { label: 'Duplicate branch', icon: 'copy', disabled: !edit || isRoot, onClick: () => duplicate(id) },
           { separator: true },
-          { colors: { current: n.color, onPick: (c) => setColor(id, c) } },
+          { colors: { current: n.color, labels: view.legend || {}, onPick: (c) => setColor(id, c) } },
           { separator: true });
       }
       items.push({ label: 'Copy as outline', hint: 'Ctrl+C', icon: 'copy', onClick: () => copyOutline(id) });
@@ -1192,7 +1204,7 @@
     }
 
     canvas.addEventListener('contextmenu', (e) => {
-      if (e.target.closest('.zoombar') || e.target.closest('.mapsearch') || e.target.closest('textarea')) return;
+      if (e.target.closest('.zoombar') || e.target.closest('.mapsearch') || e.target.closest('.legend') || e.target.closest('textarea')) return;
       e.preventDefault();
       if (!view) return;
       clearLongPress();
@@ -1227,6 +1239,89 @@
         clearTimeout(lp.timer);
         lp = null;
       }
+    }
+
+    /* ---------- colour key ---------- */
+    function readLegendOpen() {
+      try {
+        const v = localStorage.getItem('ideamap-legend-open');
+        if (v !== null) return v === '1';
+      } catch { /* private mode */ }
+      return !(window.matchMedia && window.matchMedia('(max-width: 760px)').matches); // collapsed on phones by default
+    }
+
+    function setLegendOpen(on) {
+      legendOpen = on;
+      if (!on) legendEdit = false;
+      try { localStorage.setItem('ideamap-legend-open', on ? '1' : '0'); } catch { /* private mode */ }
+      renderLegend();
+    }
+
+    // Colours worth listing: named ones, and colours that ideas use. Edit mode lists all eight.
+    function legendRows(all) {
+      const counts = {};
+      for (const id of Object.keys(view.nodes)) counts[view.nodes[id].color] = (counts[view.nodes[id].color] || 0) + 1;
+      const names = view.legend || {};
+      return D.COLORS.filter((c) => all || names[c] || (c !== 'default' && counts[c])).map((c) => ({ c, label: names[c] || '', count: counts[c] || 0 }));
+    }
+
+    function setFocus(c) {
+      focusColor = focusColor === c ? null : c;
+      renderAll();
+    }
+
+    function setLegendName(color, label) {
+      const old = (view.legend || {})[color] || '';
+      if (label.trim().replace(/\s+/g, ' ') === old) return;
+      commit({ type: 'legend', color, label });
+    }
+
+    function renderLegend() {
+      if (!view) return;
+      const editMode = legendEdit && canEdit();
+      const rows = legendRows(editMode);
+      const sig = JSON.stringify([rows, legendOpen, editMode, focusColor, canEdit()]);
+      if (sig === legendSig) return;
+      if (legendEl.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return; // never steal focus while someone is typing a name
+      legendSig = sig;
+      bKey.setAttribute('aria-pressed', legendOpen ? 'true' : 'false');
+      if (!legendOpen) {
+        legendEl.className = 'legend collapsed';
+        legendEl.replaceChildren(h('button', { class: 'btn sm legend-tab', type: 'button', onclick: () => setLegendOpen(true) }, icon('palette'), 'Colour key'));
+        return;
+      }
+      legendEl.className = 'legend';
+      const body = [];
+      if (!rows.length) body.push(h('p', { class: 'lg-empty' }, canEdit() ? 'No colours are used yet. Colour an idea (right-click it), then name the colour here.' : 'No colours are used on this map yet.'));
+      for (const r of rows) {
+        const sw = h('span', { class: 'sw lg-sw c-' + r.c, 'aria-hidden': 'true' });
+        const count = h('span', { class: 'lg-count', title: r.count + (r.count === 1 ? ' idea' : ' ideas') }, String(r.count));
+        if (editMode) {
+          const input = h('input', { type: 'text', maxlength: String(D.MAX_LEGEND), placeholder: 'What does ' + COLOR_NAMES[r.c].toLowerCase() + ' mean?', 'aria-label': 'Meaning of ' + COLOR_NAMES[r.c], value: r.label });
+          input.value = r.label;
+          input.addEventListener('change', () => setLegendName(r.c, input.value));
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') input.blur();
+            else if (e.key === 'Escape') {
+              input.value = r.label;
+              input.blur();
+            }
+            e.stopPropagation();
+          });
+          body.push(h('div', { class: 'lg-row edit' }, sw, input, count));
+        } else {
+          body.push(h('button', { class: 'lg-row' + (focusColor === r.c ? ' on' : ''), type: 'button', 'aria-pressed': focusColor === r.c ? 'true' : 'false', title: 'Highlight only the ' + COLOR_NAMES[r.c].toLowerCase() + ' ideas (Esc to clear)', onclick: () => setFocus(r.c) },
+            sw, r.label ? h('span', { class: 'lg-label' }, r.label) : h('span', { class: 'lg-label lg-none' }, COLOR_NAMES[r.c] + ' (not named)'), count));
+        }
+      }
+      legendEl.replaceChildren(...[
+        h('div', { class: 'lg-head' }, h('strong', {}, 'Colour key'), h('span', { class: 'grow' }),
+          canEdit() ? h('button', { class: 'btn ghost sm', type: 'button', onclick: () => { legendEdit = !legendEdit; renderLegend(); } }, editMode ? 'Done' : 'Edit') : null,
+          h('button', { class: 'btn ghost icon sm', type: 'button', 'aria-label': 'Hide the colour key', title: 'Hide', onclick: () => setLegendOpen(false) }, '–')),
+        ...body,
+        focusColor ? h('button', { class: 'btn sm lg-clear', type: 'button', onclick: () => setFocus(focusColor) }, 'Show all ideas') : null,
+        !editMode && canEdit() && rows.some((r) => !r.label) ? h('p', { class: 'lg-hint' }, 'Some colours have no name yet. Press Edit to say what they are for.') : null,
+      ].filter(Boolean)); // replaceChildren turns null into the text "null"
     }
 
     /* ---------- PNG export ---------- */
@@ -1272,8 +1367,16 @@
       const ids = visibleIds();
       const b = bounds(ids);
       const pad = 48;
-      const W = b.x1 - b.x0 + pad * 2;
-      const H = b.y1 - b.y0 + pad * 2;
+      const lgRows = legendRows(false);
+      let lgW = 0;
+      if (lgRows.length) {
+        const m = document.createElement('canvas').getContext('2d');
+        m.font = '500 13px "IBM Plex Sans", system-ui, sans-serif';
+        lgW = Math.max(...lgRows.map((r) => 24 + m.measureText(r.label || '(not named)').width), 90);
+      }
+      const lgH = lgRows.length ? 48 + lgRows.length * 26 : 0;
+      const W = Math.max(b.x1 - b.x0, lgW) + pad * 2;
+      const H = b.y1 - b.y0 + pad * 2 + lgH;
       const scale = Math.min(2, 8000 / Math.max(W, H));
       const cv = document.createElement('canvas');
       cv.width = Math.max(1, Math.ceil(W * scale));
@@ -1337,6 +1440,27 @@
           c.fillStyle = v('--muted');
           c.fillText('+' + (D.subtreeIds(view, id).length - 1) + ' folded', g.x + 4, g.y + g.h + 14);
         }
+      }
+      if (lgRows.length) {
+        const kx = b.x0;
+        const ky = b.y1 + 44;
+        c.textAlign = 'left';
+        c.fillStyle = v('--text');
+        c.font = '600 13px "IBM Plex Sans", system-ui, sans-serif';
+        c.fillText('Colour key', kx, ky);
+        lgRows.forEach((r, i) => {
+          const yy = ky + 26 + i * 26;
+          c.beginPath();
+          c.arc(kx + 8, yy - 4, 7, 0, Math.PI * 2);
+          c.fillStyle = r.c === 'default' ? v('--nc-default-bg') : v('--nc-' + r.c + '-bd');
+          c.fill();
+          c.lineWidth = 2;
+          c.strokeStyle = v('--nc-' + r.c + '-bd');
+          c.stroke();
+          c.fillStyle = r.label ? v('--text') : v('--muted');
+          c.font = '500 13px "IBM Plex Sans", system-ui, sans-serif';
+          c.fillText(r.label || '(not named)', kx + 24, yy);
+        });
       }
       c.setTransform(scale, 0, 0, scale, 0, 0);
       c.font = '500 11px "IBM Plex Sans", sans-serif';

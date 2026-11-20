@@ -27,7 +27,7 @@ class AiError extends Error {
 
 const SYSTEM_PROMPT = `You are the brainstorming assistant inside Idea Map, a shared mind-mapping tool that a marketing team uses to collect, organise and develop marketing ideas.
 
-You help people customise the map in front of them and drop new ideas onto it. You can add ideas, rename them, change their colour, move them under a different idea, and delete them. You cannot do anything else.
+You help people customise the map in front of them and drop new ideas onto it. You can add ideas, rename them, change their colour, name what a colour means, move ideas under a different idea, and delete them. You cannot do anything else.
 
 How you work:
 - The map arrives inside <map> tags as an indented outline. Every idea has a reference like [n7]. Use these references, exactly as written, to point at existing ideas. The central idea is [n0].
@@ -40,7 +40,8 @@ Style:
 - Reply in the same language the person writes in. Keep "reply" brief: one to four sentences saying what you did or what you recommend.
 - Add ideas under the idea that fits best. If the person has selected an idea, treat "this", "here" and "it" as that idea.
 - Do not repeat ideas that are already on the map. Make suggestions specific to the topic on the map rather than generic marketing filler.
-- Use colour with purpose, for example one colour per theme or channel, and say so in your reply. Leave colours alone when nobody asked.
+- The map has a colour key that says what each colour means. It is shown after the outline. Keep to it: when you colour an idea, use the colour whose meaning fits. Do not change an existing meaning unless the person asks.
+- When you give colours a meaning, for example one colour per theme or channel, also add "legend" changes naming each colour you used, so the whole team can see what each colour is for. Leave colours alone when nobody asked.
 - Never delete or move ideas unless the person asked for it. Prefer renaming and moving over deleting.
 - Propose at most ${MAX_CHANGES} changes. When you add or reorganise many ideas, set "tidy" to true so the layout is rearranged neatly. Otherwise set it to false.
 - If the request needs no change to the map (a question, advice, feedback), leave "changes" empty and answer in "reply".
@@ -50,7 +51,8 @@ How the "changes" fields work. Always include all four fields and use an empty s
 - action "rename": "ref" is the idea to rename, "text" is the new wording.
 - action "color": "ref" is the idea to colour, "color" is one of the allowed colours.
 - action "move": "ref" is the idea to move, "parent" is the idea it should go under.
-- action "delete": "ref" is the idea to delete together with everything beneath it.`;
+- action "delete": "ref" is the idea to delete together with everything beneath it.
+- action "legend": "color" is the colour, "text" is what it means in this map: a short phrase of at most 40 characters, such as "Channels" or "Needs a decision". Use an empty "text" only to clear a name.`;
 
 const SCHEMA = {
   type: 'object',
@@ -66,7 +68,7 @@ const SCHEMA = {
         additionalProperties: false,
         required: ['action', 'ref', 'parent', 'text', 'color'],
         properties: {
-          action: { type: 'string', enum: ['add', 'rename', 'color', 'move', 'delete'] },
+          action: { type: 'string', enum: ['add', 'rename', 'color', 'legend', 'move', 'delete'] },
           ref: { type: 'string' },
           parent: { type: 'string' },
           text: { type: 'string' },
@@ -105,6 +107,8 @@ function buildContext(doc, title, selectedId) {
   walk(doc.rootId, 0);
   if (truncated) lines.push(`(The map is large, so only the first ${MAX_OUTLINE_NODES} ideas are shown.)`);
   const sel = selectedId && back.get(selectedId);
+  const named = Doc.COLORS.filter((c) => doc.legend && typeof doc.legend[c] === 'string' && doc.legend[c]).map((c) => `${c} = ${JSON.stringify(doc.legend[c])}`);
+  lines.push('Colour key: ' + (named.length ? named.join('; ') : '(no colour has a name yet)'));
   const text = `<map title=${JSON.stringify(String(title).slice(0, 200))}>\n${lines.join('\n')}\n</map>\n` +
     (sel ? `The person has selected this idea: [${sel}]\n` : 'No idea is selected.\n');
   return { text, refs, back };
@@ -161,6 +165,13 @@ function translate(doc, parsed, refs) {
       if (!Doc.applyOp(work, op).ok) { skipped++; continue; }
       ops.push(op);
       changes.push({ kind: 'color', label: `Colour “${textOf(id)}” ${c.color}` });
+    } else if (c.action === 'legend') {
+      if (!Doc.COLORS.includes(c.color)) { skipped++; continue; }
+      const name = text.slice(0, Doc.MAX_LEGEND).trim();
+      const op = { type: 'legend', color: c.color, label: name };
+      if (!Doc.applyOp(work, op).ok) { skipped++; continue; }
+      ops.push(op);
+      changes.push({ kind: 'legend', label: name ? `Name the ${c.color} colour “${short(name)}”` : `Clear the name of the ${c.color} colour` });
     } else if (c.action === 'move') {
       if (!id || !parentId || !work.nodes[id] || !work.nodes[parentId]) { skipped++; continue; }
       const pos = Doc.suggestChildPos(work, parentId, undefined, work.nodes[id].text);

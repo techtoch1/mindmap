@@ -17,9 +17,10 @@
   const MAX_COORD = 100000;
   const MAX_DEPTH = 60;
   const MAX_BATCH = 250;
+  const MAX_LEGEND = 40; // characters in the name of a colour
   const COLORS = ['default', 'blue', 'green', 'amber', 'red', 'purple', 'teal', 'grey'];
   const ID_RE = /^[A-Za-z0-9_-]{4,24}$/;
-  const CLIENT_OPS = ['add', 'text', 'move', 'reparent', 'delete', 'color', 'layout', 'batch'];
+  const CLIENT_OPS = ['add', 'text', 'move', 'reparent', 'delete', 'color', 'layout', 'legend', 'batch'];
 
   const HG = 70; // horizontal gap between levels
   const VG = 18; // vertical gap between siblings
@@ -46,6 +47,7 @@
     const id = newId();
     return {
       rootId: id,
+      legend: {},
       nodes: { [id]: { id, parent: null, text: cleanText(rootText || 'Central idea').slice(0, MAX_TEXT), x: 0, y: 0, color: 'default', children: [] } },
     };
   }
@@ -334,6 +336,19 @@
       return { ok: true, inverse: { type: 'delete', id: top.id } };
     },
 
+    // The colour key: what each colour means in this map. An empty label clears the name.
+    legend(doc, op) {
+      if (!COLORS.includes(op.color)) return fail('Bad colour');
+      if (typeof op.label !== 'string') return fail('Bad name');
+      const label = cleanText(op.label).replace(/\s+/g, ' ').trim();
+      if (label.length > MAX_LEGEND) return fail('Colour names can be ' + MAX_LEGEND + ' characters at most');
+      if (!doc.legend || typeof doc.legend !== 'object') doc.legend = {};
+      const old = Object.prototype.hasOwnProperty.call(doc.legend, op.color) ? doc.legend[op.color] : '';
+      if (label) doc.legend[op.color] = label;
+      else delete doc.legend[op.color];
+      return { ok: true, inverse: { type: 'legend', color: op.color, label: old } };
+    },
+
     layout(doc, op) {
       if (!op.pos || typeof op.pos !== 'object') return fail('Bad layout');
       const ids = Object.keys(op.pos);
@@ -484,7 +499,9 @@
       const n = doc.nodes[id];
       return { text: n.text, color: n.color, x: n.x, y: n.y, children: n.children.map(walk) };
     };
-    return { format: 'idea-map', version: 1, title: title || '', exportedAt: new Date().toISOString(), root: walk(doc.rootId) };
+    const legend = {};
+    for (const c of COLORS) if (doc.legend && typeof doc.legend[c] === 'string' && doc.legend[c]) legend[c] = doc.legend[c];
+    return { format: 'idea-map', version: 1, title: title || '', exportedAt: new Date().toISOString(), legend, root: walk(doc.rootId) };
   }
 
   // Builds a fresh document (new ids) from an exported tree. Throws Error on bad input.
@@ -509,7 +526,15 @@
       return id;
     };
     const rootId = build(input.root, null, 0);
-    const doc = { rootId, nodes };
+    const legend = {};
+    if (input.legend && typeof input.legend === 'object' && !Array.isArray(input.legend)) {
+      for (const c of COLORS) {
+        if (typeof input.legend[c] !== 'string') continue;
+        const l = cleanText(input.legend[c]).replace(/\s+/g, ' ').trim().slice(0, MAX_LEGEND);
+        if (l) legend[c] = l;
+      }
+    }
+    const doc = { rootId, legend, nodes };
     if (!hasPos) {
       nodes[rootId].x = 0;
       nodes[rootId].y = 0;
@@ -535,12 +560,13 @@
 
   function searchText(doc, title) {
     const parts = [title];
+    if (doc.legend) for (const c of COLORS) if (doc.legend[c]) parts.push(doc.legend[c]);
     for (const id of Object.keys(doc.nodes)) parts.push(doc.nodes[id].text);
     return parts.join('\n').toLowerCase().slice(0, 200000);
   }
 
   return {
-    MAX_NODES, MAX_TEXT, MAX_DEPTH, COLORS, ID_RE,
+    MAX_NODES, MAX_TEXT, MAX_DEPTH, MAX_LEGEND, COLORS, ID_RE,
     newId, newDoc, clone, count, cleanText,
     subtreeIds, isDescendant, depthOf,
     nodeSize, sizeOf, tidy, sideOf, suggestChildPos,

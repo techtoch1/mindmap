@@ -39,8 +39,23 @@
       if (it.separator) el.appendChild(h('div', { class: 'ctx-sep', role: 'separator' }));
       else if (it.heading) el.appendChild(h('div', { class: 'ctx-head', role: 'presentation' }, it.heading));
       else if (it.colors) {
-        el.appendChild(h('div', { class: 'ctx-colors', role: 'group', 'aria-label': 'Colour' }, Object.keys(COLOR_NAMES).map((c) =>
-          h('button', { class: 'sw c-' + c, type: 'button', role: 'menuitemradio', 'aria-checked': it.colors.current === c ? 'true' : 'false', 'aria-pressed': it.colors.current === c ? 'true' : 'false', title: COLOR_NAMES[c], 'aria-label': COLOR_NAMES[c], onclick: run(() => it.colors.onPick(c)) }))));
+        // Each colour shows what it means in this map (the colour key), as a tooltip and in the line underneath.
+        const meanings = it.colors.labels || {};
+        const name = (c) => COLOR_NAMES[c] + (meanings[c] ? ': ' + meanings[c] : '');
+        const caption = (c) => (meanings[c] ? name(c) : COLOR_NAMES[c] + ' (no meaning set yet)');
+        const cap = h('div', { class: 'ctx-colorcap', 'aria-live': 'polite' }, caption(it.colors.current));
+        const swatchBtns = Object.keys(COLOR_NAMES).map((c) => {
+          const b = h('button', { class: 'sw c-' + c, type: 'button', role: 'menuitemradio', 'aria-checked': it.colors.current === c ? 'true' : 'false', 'aria-pressed': it.colors.current === c ? 'true' : 'false', title: name(c), 'aria-label': name(c), onclick: run(() => it.colors.onPick(c)) });
+          const show = () => { cap.textContent = caption(c); };
+          const reset = () => { cap.textContent = caption(it.colors.current); };
+          b.addEventListener('mouseenter', show);
+          b.addEventListener('focus', show);
+          b.addEventListener('mouseleave', reset);
+          b.addEventListener('blur', reset);
+          return b;
+        });
+        el.appendChild(h('div', { class: 'ctx-colors', role: 'group', 'aria-label': 'Colour' }, swatchBtns));
+        el.appendChild(cap);
       } else {
         el.appendChild(h('button', { class: 'ctx-item' + (it.danger ? ' danger' : ''), type: 'button', role: 'menuitem', disabled: it.disabled || undefined, onclick: run(it.onClick) },
           it.icon ? icon(it.icon) : h('span', { class: 'ctx-icon' }),
