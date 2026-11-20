@@ -34,6 +34,8 @@
     const pointers = new Map();
     let lastTap = { id: null, t: 0 };
     let lp = null; // long-press timer (touch)
+    let commentCounts = {}; // idea id -> number of comments
+    let countsTimer = null;
     let legendOpen = readLegendOpen();
     let legendEdit = false;
     let legendSig = '';
@@ -94,18 +96,19 @@
     const bFind = btn('Find', 'search', () => openSearch(), { title: 'Find an idea in this map (Ctrl+F)' });
     const bAsk = btn('Ask Claude', 'spark', () => ai.toggle(), { title: 'Brainstorm and customise this map with Claude' });
     const editTools = [bAsk, h('span', { class: 'sep' }), bAddChild, bAddSib, bDelete, h('span', { class: 'sep' }), swatches, h('span', { class: 'sep' }), bUndo, bRedo, bTidy, h('span', { class: 'sep' })];
+    const bDetails = btn('Details', 'note', () => toggleDetails(), { title: 'Description and comments for the selected idea (D)' });
     const bKey = btn('Colour key', 'palette', () => setLegendOpen(!legendOpen), { title: 'Show or hide the colour key: what each colour means' });
     const chatBadge = h('span', { class: 'badge-count hidden' });
     const bChat = btn('Chat', 'chat', () => chat.toggle(), { title: 'Team chat and a discussion for this map' });
     bChat.appendChild(chatBadge);
-    const toolbar = h('div', { class: 'ed-tools', role: 'toolbar', 'aria-label': 'Map tools' }, editTools, bFold, h('span', { class: 'sep' }), bKey, bChat, bFind, bPng, bJson);
+    const toolbar = h('div', { class: 'ed-tools', role: 'toolbar', 'aria-label': 'Map tools' }, editTools, bFold, h('span', { class: 'sep' }), bDetails, bKey, bChat, bFind, bPng, bJson);
 
     const bar = h('div', { class: 'ed-bar' },
       h('a', { class: 'btn ghost sm', href: '#/', title: 'Back to all maps' }, icon('back'), 'Maps'),
       titleHolder, h('span', { class: 'grow' }), peersBox, status);
     const ai = window.IdeaAiPanel.create({
       mapId, api: ctx.api, enabled: !!(ctx.ai && ctx.ai.enabled), isAdmin: !!ctx.isAdmin, autoAllowed: !!(ctx.ai && ctx.ai.autoApply),
-      onOpen: () => chat.close(),
+      onOpen: () => { chat.close(); details.close(); },
       getSelected: () => selected,
       undo: () => send({ t: 'undo' }),
       apply: (op) => {
@@ -119,14 +122,20 @@
     const chat = window.IdeaChat.create({
       user: ctx.user, api: ctx.api,
       rooms: [{ id: 'map-' + mapId, label: 'This map' }, { id: 'team', label: 'Team' }],
-      onOpen: () => ai.close(),
+      onOpen: () => { ai.close(); details.close(); },
+    });
+    const details = window.IdeaDetails.create({
+      mapId, user: ctx.user, api: ctx.api, canEdit: () => canEdit(),
+      getIdea: (id) => (view && Object.prototype.hasOwnProperty.call(view.nodes, id) ? view.nodes[id] : null),
+      setNote: (id, text) => commit({ type: 'note', id, text }),
+      onOpen: () => { ai.close(); chat.close(); },
     });
     chat.onUnread((n) => {
       chatBadge.textContent = n > 99 ? '99+' : String(n);
       chatBadge.classList.toggle('hidden', !n);
       bChat.setAttribute('aria-label', n ? `Chat, ${n} unread` : 'Chat');
     });
-    const root = h('div', { class: 'ed', id: 'main' }, bar, toolbar, h('div', { class: 'ed-body' }, canvas, ai.el, chat.el));
+    const root = h('div', { class: 'ed', id: 'main' }, bar, toolbar, h('div', { class: 'ed-body' }, canvas, ai.el, chat.el, details.el));
     container.replaceChildren(root);
 
     /* ---------- networking ---------- */
@@ -194,6 +203,7 @@
             firstFit = false;
             fit();
           }
+          loadCounts();
           renderPeers();
           break;
         case 'op': {
@@ -217,6 +227,14 @@
         }
         case 'notice':
           toast(m.message);
+          break;
+        case 'comment':
+        case 'comment-del':
+          commentCounts[m.nodeId] = Math.max(0, (commentCounts[m.nodeId] || 0) + (m.t === 'comment' ? 1 : -1));
+          details.onPush(m);
+          renderAll();
+          clearTimeout(countsTimer);
+          countsTimer = setTimeout(loadCounts, 600); // settle on the server's numbers
           break;
         case 'title':
           title = m.title;
@@ -290,6 +308,7 @@
       if (selected === id) return;
       selected = id;
       send({ t: 'select', ids: id ? [id] : [] });
+      details.follow(id);
       renderAll();
     }
 
@@ -579,6 +598,24 @@
           fold.title = isFolded ? 'Unfold branch' : 'Fold branch (only for you)';
         } else if (fold) fold.remove();
 
+        const cnt = commentCounts[id] || 0;
+        const hasNote = !!n.note;
+        let badge = e.querySelector('.node-badges');
+        if (hasNote || cnt) {
+          const sig = (hasNote ? 'n' : '') + cnt;
+          if (!badge) {
+            badge = h('button', { class: 'node-badges', type: 'button', tabindex: '-1' });
+            e.appendChild(badge);
+          }
+          if (badge.dataset.sig !== sig) {
+            badge.dataset.sig = sig;
+            badge.replaceChildren(...[hasNote ? icon('note') : null, cnt ? h('span', { class: 'cnt' }, String(cnt)) : null].filter(Boolean));
+            badge.setAttribute('aria-label', (hasNote ? 'Has a description. ' : '') + (cnt ? `${cnt} comment${cnt === 1 ? '' : 's'}. ` : '') + 'Open details');
+          }
+        } else if (badge) badge.remove();
+        if (n.note) e.title = short(n.note, 160);
+        else e.removeAttribute('title');
+
         for (const old of e.querySelectorAll('.peer-tag')) old.remove();
         if (peersHere) {
           peersHere.forEach((p, i) => {
@@ -601,6 +638,7 @@
       drawEdges(vis, dragSet);
       updateToolbar();
       renderLegend();
+      details.refresh();
     }
 
     function drawEdges(vis, dragSet) {
@@ -745,6 +783,12 @@
       if (pointers.size === 2) return startPinch();
       if (pointers.size > 2) return;
       const nodeEl = e.target.closest('.node');
+      if (e.target.closest('.node-badges') && nodeEl) {
+        e.preventDefault();
+        setSelected(nodeEl.dataset.id);
+        details.open(nodeEl.dataset.id);
+        return;
+      }
       if (e.target.closest('.fold') && nodeEl) {
         e.preventDefault();
         toggleFold(nodeEl.dataset.id);
@@ -963,6 +1007,9 @@
         if (!sel) return setSelected(view.rootId);
         const next = neighbor(key.slice(5).toLowerCase());
         if (next) setSelected(next);
+      } else if (key === 'd' || key === 'D') {
+        e.preventDefault(); // otherwise the letter lands in the box that just got focus
+        toggleDetails();
       } else if (key === '?') showShortcuts();
       else if (key === '/') {
         e.preventDefault();
@@ -1127,7 +1174,7 @@
         content: h('table', { class: 'keys' }, h('tbody', {},
           group('Ideas'),
           row(h('kbd', {}, 'Tab'), 'Add a child idea'), row(h('kbd', {}, 'Enter'), 'Add a sibling idea'), row(h('kbd', {}, 'F2'), 'Edit the selected idea (or double-click)'),
-          row(h('kbd', {}, 'Delete'), 'Delete the idea and its branch'), row(h('kbd', {}, 'Ctrl+Z'), 'Undo your last change (Ctrl+Shift+Z to redo)'),
+          row(h('kbd', {}, 'Delete'), 'Delete the idea and its branch'), row(h('kbd', {}, 'D'), 'Open the description and comments of the selected idea'), row(h('kbd', {}, 'Ctrl+Z'), 'Undo your last change (Ctrl+Shift+Z to redo)'),
           row(h('kbd', {}, 'Ctrl+C'), 'Copy the branch as an outline'), row(h('kbd', {}, 'Ctrl+V'), 'Paste an outline as ideas under the selected idea'),
           group('Moving around'),
           row(h('kbd', {}, 'Arrow keys'), 'Select the neighbouring idea'), row(h('kbd', {}, 'Ctrl+F'), 'Find an idea (or press /)'),
@@ -1150,7 +1197,7 @@
       const n = view.nodes[id];
       const isRoot = !n.parent;
       const edit = canEdit() && connected;
-      const items = [{ heading: short(n.text) }];
+      const items = [{ heading: short(n.text) }, { label: 'Description & comments', hint: 'D', icon: 'note', onClick: () => details.open(id) }];
       if (canEdit()) {
         items.push(
           { label: 'Edit text', hint: 'F2', icon: 'edit', disabled: !edit, onClick: () => startEdit(id, false) },
@@ -1239,6 +1286,19 @@
         clearTimeout(lp.timer);
         lp = null;
       }
+    }
+
+    /* ---------- description and comments ---------- */
+    function loadCounts() {
+      ctx.api('GET', `/api/maps/${encodeURIComponent(mapId)}/comments`).then((r) => {
+        commentCounts = r.counts || {};
+        if (!closed && view) renderAll();
+      }).catch(() => { /* the numbers are a convenience */ });
+    }
+
+    function toggleDetails() {
+      if (!view) return;
+      details.toggle(selected || view.rootId);
     }
 
     /* ---------- colour key ---------- */

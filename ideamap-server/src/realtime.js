@@ -113,6 +113,12 @@ class Hub {
     if (room) this._flush(room);
   }
 
+  // Push a message to everyone who currently has this map open (comments, for instance).
+  pushToMap(mapId, msg) {
+    const room = this.rooms.get(mapId);
+    if (room) this._broadcast(room, msg);
+  }
+
   renameRoom(mapId, title) {
     const room = this.rooms.get(mapId);
     if (!room) return;
@@ -271,13 +277,13 @@ class Hub {
       }
       case 'select': {
         if (!Array.isArray(m.ids) || m.ids.length > 20) return;
-        const ids = m.ids.filter((id) => typeof id === 'string' && room.doc.nodes[id]);
+        const ids = m.ids.filter((id) => typeof id === 'string' && Object.prototype.hasOwnProperty.call(room.doc.nodes, id));
         this._broadcast(room, { t: 'select', c: conn.id, ids }, conn);
         return;
       }
       case 'fold': {
         if (!Array.isArray(m.ids) || m.ids.length > MAX_FOLDS) return;
-        const ids = m.ids.filter((id) => typeof id === 'string' && room.doc.nodes[id]);
+        const ids = m.ids.filter((id) => typeof id === 'string' && Object.prototype.hasOwnProperty.call(room.doc.nodes, id));
         this.q.setFold.run(conn.userId, room.id, JSON.stringify(ids));
         return;
       }

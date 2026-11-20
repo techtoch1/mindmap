@@ -8,6 +8,7 @@ const { Hub } = require('./realtime');
 const { TEMPLATES } = require('./templates');
 const aiMod = require('./ai');
 const { Chat, ChatError } = require('./chat');
+const { Comments } = require('./comments');
 const Doc = require('../public/doc.js');
 
 const ROLES = ['admin', 'editor', 'viewer'];
@@ -568,6 +569,32 @@ function createApp(config, deps = {}) {
     return { ok: true };
   });
 
+  // --- comments on ideas ---
+  function requireIdea(mapId, nodeId) {
+    const m = loadMap(mapId);
+    if (!Object.prototype.hasOwnProperty.call(JSON.parse(m.data).nodes, nodeId)) throw new HttpError(404, 'Idea not found');
+  }
+
+  route('GET', '/api/maps/:id/comments', 'user', ({ params }) => {
+    loadMap(params.id);
+    return { counts: comments.counts(params.id) };
+  });
+
+  route('GET', '/api/maps/:id/nodes/:nodeId/comments', 'user', ({ params }) => {
+    requireIdea(params.id, params.nodeId);
+    return { comments: comments.list(params.id, params.nodeId) };
+  });
+
+  route('POST', '/api/maps/:id/nodes/:nodeId/comments', 'user', ({ params, body, sess }) => {
+    requireIdea(params.id, params.nodeId);
+    return chatCall(() => ({ comment: comments.post(sess.user, params.id, params.nodeId, body.text) }));
+  });
+
+  route('DELETE', '/api/comments/:id', 'user', ({ params, sess }) => chatCall(() => {
+    comments.remove(sess.user, Number(params.id));
+    return { ok: true };
+  }));
+
   // --- chat ---
   const chatError = (e) => (e instanceof ChatError ? new HttpError(e.status, e.message) : e);
   const chatCall = (fn) => {
@@ -699,6 +726,7 @@ function createApp(config, deps = {}) {
     },
   });
   const chat = new Chat({ db, sessionFromCookie, originAllowed });
+  const comments = new Comments({ db, push: (mapId, msg) => hub.pushToMap(mapId, msg) });
   server.on('upgrade', (req, socket, head) => {
     let pathname = '';
     try { pathname = new URL(req.url, 'http://x').pathname; } catch { /* handled below */ }

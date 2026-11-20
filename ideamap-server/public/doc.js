@@ -18,9 +18,10 @@
   const MAX_DEPTH = 60;
   const MAX_BATCH = 250;
   const MAX_LEGEND = 40; // characters in the name of a colour
+  const MAX_NOTE = 2000; // characters in an idea's description
   const COLORS = ['default', 'blue', 'green', 'amber', 'red', 'purple', 'teal', 'grey'];
   const ID_RE = /^[A-Za-z0-9_-]{4,24}$/;
-  const CLIENT_OPS = ['add', 'text', 'move', 'reparent', 'delete', 'color', 'layout', 'legend', 'batch'];
+  const CLIENT_OPS = ['add', 'text', 'move', 'reparent', 'delete', 'color', 'layout', 'legend', 'note', 'batch'];
 
   const HG = 70; // horizontal gap between levels
   const VG = 18; // vertical gap between siblings
@@ -36,11 +37,22 @@
     return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
 
+  // Ideas are looked up by ids that arrive from other people's browsers. A plain `doc.nodes[id]` would also
+  // "find" inherited names such as "__proto__" or "constructor" and let an operation write onto JavaScript's shared
+  // base objects. So every lookup of an incoming id goes through these two.
+  const own = (obj, key) => typeof key === 'string' && Object.prototype.hasOwnProperty.call(obj, key);
+  const getNode = (doc, id) => (own(doc.nodes, id) ? doc.nodes[id] : undefined);
+  const RESERVED_IDS = { has: (id) => typeof id === 'string' && id in Object.prototype }; // __proto__, constructor, toString, ...
   const isNum = (n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= MAX_COORD;
   const fail = (error) => ({ ok: false, error });
 
   function cleanText(s) {
     return String(s).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').replace(/\r\n?/g, '\n');
+  }
+
+  // A description: keeps line breaks, drops control characters and trailing blank space.
+  function cleanNote(s) {
+    return cleanText(s).replace(/[ \t]+\n/g, '\n').replace(/\n{4,}/g, '\n\n\n').trim();
   }
 
   function newDoc(rootText) {
@@ -232,9 +244,9 @@
 
   const handlers = {
     add(doc, op) {
-      if (!ID_RE.test(op.id || '')) return fail('Bad node id');
-      if (doc.nodes[op.id]) return fail('Node already exists');
-      const parent = doc.nodes[op.parent];
+      if (!ID_RE.test(op.id || '') || RESERVED_IDS.has(op.id)) return fail('Bad node id');
+      if (own(doc.nodes, op.id)) return fail('Node already exists');
+      const parent = getNode(doc, op.parent);
       if (!parent) return fail('Parent not found');
       if (count(doc) >= MAX_NODES) return fail('This map is full (' + MAX_NODES + ' ideas)');
       if (depthOf(doc, parent.id) + 1 > MAX_DEPTH) return fail('Too deeply nested');
@@ -243,15 +255,20 @@
       if (!isNum(op.x) || !isNum(op.y)) return fail('Bad position');
       const color = op.color === undefined ? 'default' : op.color;
       if (!COLORS.includes(color)) return fail('Bad colour');
+      if (op.note !== undefined && (typeof op.note !== 'string' || op.note.length > MAX_NOTE)) return fail('Descriptions can be ' + MAX_NOTE + ' characters at most');
       let index = Number.isInteger(op.index) ? op.index : parent.children.length;
       index = Math.max(0, Math.min(parent.children.length, index));
       doc.nodes[op.id] = { id: op.id, parent: parent.id, text: cleanText(text), x: op.x, y: op.y, color, children: [] };
+      if (op.note) {
+        const note = cleanNote(op.note);
+        if (note) doc.nodes[op.id].note = note;
+      }
       parent.children.splice(index, 0, op.id);
       return { ok: true, inverse: { type: 'delete', id: op.id } };
     },
 
     text(doc, op) {
-      const n = doc.nodes[op.id];
+      const n = getNode(doc, op.id);
       if (!n) return fail('Node not found');
       if (typeof op.text !== 'string' || op.text.length > MAX_TEXT) return fail('Text too long');
       const old = n.text;
@@ -260,7 +277,7 @@
     },
 
     move(doc, op) {
-      const n = doc.nodes[op.id];
+      const n = getNode(doc, op.id);
       if (!n) return fail('Node not found');
       if (typeof op.dx !== 'number' || typeof op.dy !== 'number' || !Number.isFinite(op.dx) || !Number.isFinite(op.dy)) return fail('Bad offset');
       const ids = subtreeIds(doc, n.id);
@@ -273,7 +290,7 @@
     },
 
     color(doc, op) {
-      const n = doc.nodes[op.id];
+      const n = getNode(doc, op.id);
       if (!n) return fail('Node not found');
       if (!COLORS.includes(op.color)) return fail('Bad colour');
       const old = n.color;
@@ -282,8 +299,8 @@
     },
 
     reparent(doc, op) {
-      const n = doc.nodes[op.id];
-      const np = doc.nodes[op.parent];
+      const n = getNode(doc, op.id);
+      const np = getNode(doc, op.parent);
       if (!n || !np) return fail('Node not found');
       if (n.id === doc.rootId) return fail('The central idea cannot be moved under another idea');
       if (isDescendant(doc, np.id, n.id)) return fail('An idea cannot move under itself');
@@ -299,7 +316,7 @@
     },
 
     delete(doc, op) {
-      const n = doc.nodes[op.id];
+      const n = getNode(doc, op.id);
       if (!n) return fail('Node not found');
       if (n.id === doc.rootId) return fail('The central idea cannot be deleted');
       const ids = subtreeIds(doc, n.id);
@@ -313,14 +330,14 @@
 
     // Internal: brings back a deleted subtree (used by undo).
     restore(doc, op) {
-      const parent = doc.nodes[op.parent];
+      const parent = getNode(doc, op.parent);
       if (!parent) return fail('Parent not found');
       if (!Array.isArray(op.nodes) || op.nodes.length < 1) return fail('Nothing to restore');
       if (count(doc) + op.nodes.length > MAX_NODES) return fail('This map is full');
       const seen = new Set();
       for (const n of op.nodes) {
-        if (!n || !ID_RE.test(n.id || '') || doc.nodes[n.id] || seen.has(n.id)) return fail('Cannot restore');
-        if (typeof n.text !== 'string' || n.text.length > MAX_TEXT || !isNum(n.x) || !isNum(n.y) || !COLORS.includes(n.color) || !Array.isArray(n.children)) return fail('Cannot restore');
+        if (!n || !ID_RE.test(n.id || '') || RESERVED_IDS.has(n.id) || own(doc.nodes, n.id) || seen.has(n.id)) return fail('Cannot restore');
+        if (typeof n.text !== 'string' || n.text.length > MAX_TEXT || !isNum(n.x) || !isNum(n.y) || !COLORS.includes(n.color) || !Array.isArray(n.children) || (n.note !== undefined && (typeof n.note !== 'string' || n.note.length > MAX_NOTE))) return fail('Cannot restore');
         seen.add(n.id);
       }
       const top = op.nodes[0];
@@ -330,10 +347,23 @@
       }
       for (const n of op.nodes) {
         doc.nodes[n.id] = { id: n.id, parent: n === top ? parent.id : n.parent, text: cleanText(n.text), x: n.x, y: n.y, color: n.color, children: n.children.slice() };
+        if (n.note) doc.nodes[n.id].note = cleanNote(n.note);
       }
       const index = Math.max(0, Math.min(parent.children.length, Number.isInteger(op.index) ? op.index : parent.children.length));
       parent.children.splice(index, 0, top.id);
       return { ok: true, inverse: { type: 'delete', id: top.id } };
+    },
+
+    // An idea's description. An empty text clears it.
+    note(doc, op) {
+      const n = getNode(doc, op.id);
+      if (!n) return fail('Node not found');
+      if (typeof op.text !== 'string' || op.text.length > MAX_NOTE) return fail('Descriptions can be ' + MAX_NOTE + ' characters at most');
+      const text = cleanNote(op.text);
+      const old = n.note || '';
+      if (text) n.note = text;
+      else delete n.note;
+      return { ok: true, inverse: { type: 'note', id: n.id, text: old } };
     },
 
     // The colour key: what each colour means in this map. An empty label clears the name.
@@ -355,7 +385,7 @@
       if (ids.length > MAX_NODES) return fail('Bad layout');
       for (const id of ids) {
         const p = op.pos[id];
-        if (!doc.nodes[id] || !Array.isArray(p) || p.length !== 2 || !isNum(p[0]) || !isNum(p[1])) return fail('Bad layout');
+        if (!own(doc.nodes, id) || !Array.isArray(p) || p.length !== 2 || !isNum(p[0]) || !isNum(p[1])) return fail('Bad layout');
       }
       const old = {};
       for (const id of ids) {
@@ -406,7 +436,7 @@
       lines.push('  '.repeat(depth) + '- ' + n.text.replace(/\s*\n\s*/g, ' ').trim());
       for (const c of n.children) walk(c, depth + 1);
     };
-    if (doc.nodes[id]) walk(id, 0);
+    if (getNode(doc, id)) walk(id, 0);
     return lines.join('\n');
   }
 
@@ -433,7 +463,7 @@
 
   // Ideas pasted from text, as ONE batch of add operations under parentId.
   function opsFromOutline(doc, parentId, text) {
-    if (!doc.nodes[parentId]) return { error: 'Select an idea to paste under' };
+    if (!getNode(doc, parentId)) return { error: 'Select an idea to paste under' };
     const all = parseOutline(text);
     if (!all.length) return { error: 'There is no text to turn into ideas' };
     const items = all.slice(0, OUTLINE_LINE_CAP);
@@ -458,7 +488,7 @@
 
   // A copy of a branch placed just below the original, as ONE batch of add operations.
   function duplicateBranch(doc, id) {
-    const src = doc.nodes[id];
+    const src = getNode(doc, id);
     if (!src) return { error: 'Idea not found' };
     if (!src.parent) return { error: 'The central idea cannot be duplicated' };
     const ids = subtreeIds(doc, id);
@@ -477,6 +507,7 @@
     const ops = ids.map((nid) => {
       const n = doc.nodes[nid];
       const op = { type: 'add', id: map.get(nid), parent: nid === id ? parent.id : map.get(n.parent), text: nid === id ? (n.text + ' (copy)').slice(0, MAX_TEXT) : n.text, x: n.x, y: n.y + dy, color: n.color };
+      if (n.note) op.note = n.note;
       if (nid === id) op.index = parent.children.indexOf(id) + 1;
       return op;
     });
@@ -489,7 +520,7 @@
   function search(doc, query) {
     const q = String(query || '').trim().toLowerCase();
     if (!q) return [];
-    return subtreeIds(doc, doc.rootId).filter((id) => doc.nodes[id].text.toLowerCase().includes(q));
+    return subtreeIds(doc, doc.rootId).filter((id) => doc.nodes[id].text.toLowerCase().includes(q) || (doc.nodes[id].note || '').toLowerCase().includes(q));
   }
 
   /* ---------- import / export ---------- */
@@ -497,7 +528,10 @@
   function toTree(doc, title) {
     const walk = (id) => {
       const n = doc.nodes[id];
-      return { text: n.text, color: n.color, x: n.x, y: n.y, children: n.children.map(walk) };
+      const out = { text: n.text, color: n.color, x: n.x, y: n.y };
+      if (n.note) out.note = n.note;
+      out.children = n.children.map(walk);
+      return out;
     };
     const legend = {};
     for (const c of COLORS) if (doc.legend && typeof doc.legend[c] === 'string' && doc.legend[c]) legend[c] = doc.legend[c];
@@ -521,6 +555,10 @@
       const color = COLORS.includes(t.color) ? t.color : 'default';
       if (!isNum(t.x) || !isNum(t.y)) hasPos = false;
       nodes[id] = { id, parent, text, x: isNum(t.x) ? t.x : 0, y: isNum(t.y) ? t.y : 0, color, children: [] };
+      if (typeof t.note === 'string') {
+        const note = cleanNote(t.note.slice(0, MAX_NOTE));
+        if (note) nodes[id].note = note;
+      }
       if (t.children !== undefined && !Array.isArray(t.children)) throw new Error('Bad children in file');
       for (const c of t.children || []) nodes[id].children.push(build(c, id, depth + 1));
       return id;
@@ -561,12 +599,15 @@
   function searchText(doc, title) {
     const parts = [title];
     if (doc.legend) for (const c of COLORS) if (doc.legend[c]) parts.push(doc.legend[c]);
-    for (const id of Object.keys(doc.nodes)) parts.push(doc.nodes[id].text);
+    for (const id of Object.keys(doc.nodes)) {
+      parts.push(doc.nodes[id].text);
+      if (doc.nodes[id].note) parts.push(doc.nodes[id].note);
+    }
     return parts.join('\n').toLowerCase().slice(0, 200000);
   }
 
   return {
-    MAX_NODES, MAX_TEXT, MAX_DEPTH, MAX_LEGEND, COLORS, ID_RE,
+    MAX_NODES, MAX_TEXT, MAX_DEPTH, MAX_LEGEND, MAX_NOTE, COLORS, ID_RE,
     newId, newDoc, clone, count, cleanText,
     subtreeIds, isDescendant, depthOf,
     nodeSize, sizeOf, tidy, sideOf, suggestChildPos,

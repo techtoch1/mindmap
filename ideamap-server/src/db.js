@@ -65,6 +65,16 @@ function open(dataDir) {
       deleted INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS chat_room_id ON chat_messages(room, id);
+    CREATE TABLE IF NOT EXISTS idea_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      map_id TEXT NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      node_id TEXT NOT NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      text TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      deleted INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idea_comments_node ON idea_comments(map_id, node_id, id);
     CREATE TABLE IF NOT EXISTS chat_reads (
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       room TEXT NOT NULL,

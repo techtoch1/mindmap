@@ -21,6 +21,7 @@ A multi-user, real-time mind-mapping app for marketing ideas, by Aligned.
 - Live cursors, live selections and avatars for everyone in the map. View-only people can watch and follow along.
 - **Right-click** an idea or the empty board for a menu (long-press on a phone). The map library has one too.
 - **Paste ideas fast:** copy a bullet list or outline from a doc or email and press Ctrl+V on the board to turn it into ideas. Ctrl+C copies a branch as an outline. Duplicate a branch from the menu.
+- **Description and comments on every idea.** Select an idea and press `D` (or use the **Details** button, the badge on the idea, or right-click, **Description & comments**). The **description** is a longer note, up to 2,000 characters, part of the map: live for everyone, undoable, exported, copied when you duplicate a branch, and found by search. Editors write it and everyone can read it. **Comments** are a thread under each idea: everyone signed in can comment, viewers included, new comments appear live, and the idea shows a badge with the number of comments. You can delete your own comments and admins can delete any. Claude can read descriptions and write them.
 - **Colour key:** name what each colour means for a map (for example blue = "Channels", amber = "Needs a decision"). It is part of the map, so it is live for everyone, undoable, exported with the map and copied when you duplicate it. A small card on the board lists the colours in use with how many ideas use each, click a row to highlight just those ideas, and the meaning shows when you pick a colour. Editors name colours with **Edit** on the card. The PNG export includes the key, and Claude reads it, follows it, and can name colours when it groups ideas.
 - **Find** an idea in the map (Ctrl+F), fold or unfold every branch, and press `?` for the shortcut sheet.
 - Keyboard: `Tab` add idea, `Enter` add sibling, `F2` edit, `Del` delete, arrows to move around, `+`/`-`/`0` zoom and fit. Pinch-zoom on touch screens.
@@ -103,6 +104,7 @@ How it stays safe:
 - WebSocket: session cookie required, `Origin` must match the host (or `PUBLIC_URL`), 64 KB message cap, per-connection rate limit.
 - Strict CSP (`script-src 'self'`, `style-src 'self'`, no inline anything, `frame-ancestors 'none'`), plus `nosniff`, `no-referrer` and `X-Frame-Options`.
 - All user text is rendered with `textContent`, never as HTML.
+- Ids that arrive from browsers are looked up safely: names such as `__proto__` or `constructor` are never treated as ideas, so no operation can write onto JavaScript's shared base objects (covered by `test/security.test.js`).
 - Edits are validated by the same document engine on the server and in the browser (`public/doc.js`): size limits (2,000 ideas, 500 characters, 60 levels), a whitelist of operations, cycle checks.
 
 **Claim the app straight after deploying.** Until the first admin exists, whoever opens the page first becomes the admin. Set `SETUP_TOKEN` if you want to rule that out.
@@ -133,11 +135,13 @@ src/db.js            SQLite schema
 src/security.js      scrypt, tokens, login throttle
 src/ai.js            Claude assistant: prompt, proposal checking, limits
 src/chat.js          team chat: rooms, history, unread, live push
+src/comments.js      comments on ideas
 src/settings.js      encrypted admin settings (API key)
 src/templates.js     starter maps
 public/doc.js        document engine shared by server and browser
 public/editor.js     canvas editor     public/app.js  screens and routing
-public/ai-panel.js   Ask Claude panel     public/chat.js  team chat panel     public/context-menu.js  right-click menu
+public/ai-panel.js   Ask Claude panel     public/chat.js  team chat panel
+public/details.js    description and comments panel     public/context-menu.js  right-click menu
 test/                node:test suites (npm test)
 ```
 

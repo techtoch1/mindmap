@@ -51,6 +51,7 @@
     child: [['path', { d: 'M5 4v10a3 3 0 003 3h11M15 13l4 4-4 4' }]],
     settings: [['circle', { cx: 12, cy: 12, r: 3 }], ['path', { d: 'M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z' }]],
     palette: [['circle', { cx: 12, cy: 12, r: 9 }], ['circle', { cx: 8, cy: 10, r: 1.2 }], ['circle', { cx: 12, cy: 7, r: 1.2 }], ['circle', { cx: 16, cy: 10, r: 1.2 }], ['path', { d: 'M12 21a2.5 2.5 0 002.5-2.5c0-1.4-1.1-1.8-1.1-2.9s.9-1.6 2.3-1.6H18' }]],
+    note: [['path', { d: 'M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9z' }], ['path', { d: 'M14 3v6h6M8 13h8M8 17h5' }]],
     chat: [['path', { d: 'M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z' }]],
     send: [['path', { d: 'M22 2L11 13M22 2l-7 20-4-9-9-4z' }]],
     spark: [['path', { d: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z' }], ['path', { d: 'M19 3v4M17 5h4M5 17v4M3 19h4' }]],
@@ -174,5 +175,35 @@
     a.remove();
   }
 
-  window.IdeaUI = { h, icon, logo, avatar, initials, toast, modal, relTime, download };
+  // Turns plain text into safe DOM: http(s) links and @mentions of known people. Nothing is ever parsed as HTML.
+  function richText(text, members, meId) {
+    const first = (name) => String(name || '').split(/\s+/)[0].toLowerCase();
+    const out = [];
+    const re = /(https?:\/\/[^\s<>"']+)|(@[\p{L}\p{N}_.-]+)/giu;
+    let last = 0;
+    let mentionsMe = false;
+    let m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) out.push(text.slice(last, m.index));
+      if (m[1]) {
+        let url = m[1];
+        let trail = '';
+        while (/[.,;:!?)\]}]$/.test(url)) { trail = url.slice(-1) + trail; url = url.slice(0, -1); }
+        let ok = false;
+        try { const u = new URL(url); ok = u.protocol === 'http:' || u.protocol === 'https:'; } catch { /* not a URL */ }
+        out.push(ok ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer nofollow' }, url) : url);
+        if (trail) out.push(trail);
+      } else {
+        const name = m[2].slice(1).toLowerCase().replace(/[.-]+$/, '');
+        const hit = (members || []).find((x) => first(x.name) === name || x.name.toLowerCase().replace(/\s+/g, '') === name);
+        if (hit && hit.id === meId) mentionsMe = true;
+        out.push(hit ? h('span', { class: 'mention' + (hit.id === meId ? ' me' : '') }, m[2]) : m[2]);
+      }
+      last = re.lastIndex;
+    }
+    if (last < text.length) out.push(text.slice(last));
+    return { nodes: out, mentionsMe };
+  }
+
+  window.IdeaUI = { h, icon, logo, avatar, initials, toast, modal, relTime, download, richText };
 })();

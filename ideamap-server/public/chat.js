@@ -66,33 +66,7 @@
 
     function mine(m) { return m.userId === user.id; }
 
-    function rich(text) {
-      const out = [];
-      const re = /(https?:\/\/[^\s<>"']+)|(@[\p{L}\p{N}_.-]+)/giu;
-      let last = 0;
-      let mentionsMe = false;
-      let m;
-      while ((m = re.exec(text))) {
-        if (m.index > last) out.push(text.slice(last, m.index));
-        if (m[1]) {
-          let url = m[1];
-          let trail = '';
-          while (/[.,;:!?)\]}]$/.test(url)) { trail = url.slice(-1) + trail; url = url.slice(0, -1); }
-          let ok = false;
-          try { const u = new URL(url); ok = u.protocol === 'http:' || u.protocol === 'https:'; } catch { /* not a URL */ }
-          out.push(ok ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer nofollow' }, url) : url);
-          if (trail) out.push(trail);
-        } else {
-          const name = m[2].slice(1).toLowerCase().replace(/[.-]+$/, '');
-          const hit = members.find((x) => first(x.name) === name || x.name.toLowerCase().replace(/\s+/g, '') === name);
-          if (hit && hit.id === user.id) mentionsMe = true;
-          out.push(hit ? h('span', { class: 'mention' + (hit.id === user.id ? ' me' : '') }, m[2]) : m[2]);
-        }
-        last = re.lastIndex;
-      }
-      if (last < text.length) out.push(text.slice(last));
-      return { nodes: out, mentionsMe };
-    }
+    const rich = (text) => window.IdeaUI.richText(text, members, user.id);
 
     const dayLabel = (ts) => {
       const d = new Date(ts);

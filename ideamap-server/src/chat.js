@@ -221,4 +221,4 @@ class Chat {
   }
 }
 
-module.exports = { Chat, ChatError };
+module.exports = { Chat, ChatError, cleanMessage };
